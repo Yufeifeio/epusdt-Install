@@ -78,10 +78,10 @@ else
   NC=''
 fi
 
-info() { printf "${C}[INFO]${NC} %s\n" "$1"; }
-warn() { printf "${Y}[WARN]${NC} %s\n" "$1"; }
-success() { printf "${G}[DONE]${NC} %s\n" "$1"; }
-error() { printf "${R}[FAIL]${NC} %s\n" "$1" >&2; }
+info() { printf "${C}[信息]${NC} %s\n" "$1"; }
+warn() { printf "${Y}[警告]${NC} %s\n" "$1"; }
+success() { printf "${G}[完成]${NC} %s\n" "$1"; }
+error() { printf "${R}[失败]${NC} %s\n" "$1" >&2; }
 die() { error "$1"; exit 1; }
 
 print_line() {
@@ -91,11 +91,10 @@ print_line() {
 print_banner() {
   printf '\n'
   printf "${B}================================================================${NC}\n"
-  printf "${W}  EPUSDT INSTALL SUITE${NC}\n"
-  printf "${C}  鱼肥肥部署台${NC}\n"
-  printf "${C}  Telegram : @pyufc${NC}\n"
-  printf "${C}  地址     : https://t.me/pyufc${NC}\n"
-  printf "${C}  仓库     : Yufeifeio/epusdt-Install${NC}\n"
+  printf "${W}  EPUSDT 一键部署台${NC}\n"
+  printf "${C}  鱼肥肥 @pyufc${NC}\n"
+  printf "${C}  联系方式 : https://t.me/pyufc${NC}\n"
+  printf "${C}  发布仓库 : Yufeifeio/epusdt-Install${NC}\n"
   printf "${B}================================================================${NC}\n"
   printf '\n'
 }
@@ -110,8 +109,8 @@ menu_item() {
 support_info() {
   printf '\n'
   printf '鱼肥肥 @pyufc\n'
-  printf 'Telegram: https://t.me/pyufc\n'
-  printf 'Repo: https://github.com/Yufeifeio/epusdt-Install\n'
+  printf '联系地址: https://t.me/pyufc\n'
+  printf '仓库地址: https://github.com/Yufeifeio/epusdt-Install\n'
 }
 
 usage() {
@@ -966,11 +965,11 @@ enable_https_if_needed() {
 
 service_status_label() {
   if systemctl is-active --quiet "${SERVICE_NAME}.service"; then
-    printf '%s' "running"
+    printf '%s' "运行中"
   elif service_exists; then
-    printf '%s' "stopped"
+    printf '%s' "已停止"
   else
-    printf '%s' "missing"
+    printf '%s' "未安装"
   fi
 }
 
@@ -1091,6 +1090,7 @@ do_update() {
   fi
 
   save_state
+  printf '已清理: 旧版前端目录、上游示例环境文件、校验文件、遗留安装包\n'
   [[ -n "${ACCESS_URL}" ]] && printf '访问地址: %s\n' "${ACCESS_URL}"
   support_info
 }

@@ -20,6 +20,17 @@ bash <(curl -fsSL https://raw.githubusercontent.com/Yufeifeio/epusdt-Install/mai
 - 自动输出后台账号密码
 - 自动适配常见 `nginx` 和宝塔环境
 
+## 更新效果
+
+执行一键更新时，除了替换官方最新程序，还会自动清理这些旧残留：
+
+- 旧版前端目录 `www/`
+- 上游遗留 `.env.example`
+- 校验文件 `SHA256SUMS`
+- 安装目录下遗留的 `epusdt-*.tar.gz`
+
+这样更新后目录会更干净，不会一直堆无用文件。
+
 ## 安装结果
 
 安装完成后会直接输出：
