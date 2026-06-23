@@ -92,7 +92,7 @@ print_banner() {
   printf '\n'
   printf "${B}================================================================${NC}\n"
   printf "${W}  EPUSDT INSTALL SUITE${NC}\n"
-  printf "${C}  fish launchpad  |  鱼肥肥 @pyufc${NC}\n"
+  printf "${C}  鱼肥肥部署台  |  鱼肥肥 @pyufc${NC}\n"
   printf "${B}================================================================${NC}\n"
   printf '\n'
 }
