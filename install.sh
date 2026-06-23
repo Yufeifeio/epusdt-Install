@@ -65,29 +65,45 @@ if [[ -t 1 ]]; then
   G=$'\033[0;32m'
   Y=$'\033[1;33m'
   B=$'\033[0;34m'
+  C=$'\033[0;36m'
+  W=$'\033[1;37m'
   NC=$'\033[0m'
 else
   R=''
   G=''
   Y=''
   B=''
+  C=''
+  W=''
   NC=''
 fi
 
-info() { printf "${B}[信息]${NC} %s\n" "$1"; }
-warn() { printf "${Y}[警告]${NC} %s\n" "$1"; }
-success() { printf "${G}[完成]${NC} %s\n" "$1"; }
-error() { printf "${R}[错误]${NC} %s\n" "$1" >&2; }
+info() { printf "${C}[INFO]${NC} %s\n" "$1"; }
+warn() { printf "${Y}[WARN]${NC} %s\n" "$1"; }
+success() { printf "${G}[DONE]${NC} %s\n" "$1"; }
+error() { printf "${R}[FAIL]${NC} %s\n" "$1" >&2; }
 die() { error "$1"; exit 1; }
-print_line() { printf '%s\n' "--------------------------------------------------"; }
+
+print_line() {
+  printf '%s\n' "================================================================"
+}
+
 print_banner() {
   printf '\n'
-  print_line
-  printf ' Epusdt 一键部署脚本\n'
-  printf ' 鱼肥肥 @pyufc\n'
-  print_line
+  printf "${B}================================================================${NC}\n"
+  printf "${W}  EPUSDT INSTALL SUITE${NC}\n"
+  printf "${C}  fish launchpad  |  鱼肥肥 @pyufc${NC}\n"
+  printf "${B}================================================================${NC}\n"
   printf '\n'
 }
+
+menu_item() {
+  local code="$1"
+  local title="$2"
+  local desc="$3"
+  printf "${W} [%s]${NC} %-14s ${C}%s${NC}\n" "${code}" "${title}" "${desc}"
+}
+
 support_info() {
   printf '\n'
   printf '鱼肥肥 @pyufc\n'
@@ -101,6 +117,8 @@ usage() {
   bash install.sh install [参数]
   bash install.sh update [参数]
   bash install.sh https [参数]
+  bash install.sh info
+  bash install.sh uninstall [参数]
   bash install.sh start
   bash install.sh restart
   bash install.sh stop
@@ -159,6 +177,14 @@ command_exists() {
   command -v "$1" >/dev/null 2>&1
 }
 
+service_unit_path() {
+  printf '%s' "/etc/systemd/system/${SERVICE_NAME}.service"
+}
+
+service_exists() {
+  systemctl cat "${SERVICE_NAME}.service" >/dev/null 2>&1
+}
+
 trim() {
   local value="${1:-}"
   value="${value#"${value%%[![:space:]]*}"}"
@@ -181,6 +207,40 @@ prompt_default() {
     printf '%s' "${default}"
   else
     printf '%s' "${answer}"
+  fi
+}
+
+prompt_yes_no() {
+  local prompt="$1"
+  local default="${2:-1}"
+  local hint="Y/n"
+  local answer=""
+
+  if [[ "${default}" == "0" ]]; then
+    hint="y/N"
+  fi
+
+  printf '%s [%s]: ' "${prompt}" "${hint}" >&2
+  read -r answer
+  answer="$(trim "${answer}")"
+  answer="${answer,,}"
+
+  if [[ -z "${answer}" ]]; then
+    [[ "${default}" == "1" ]]
+    return
+  fi
+
+  case "${answer}" in
+    y|yes|1) return 0 ;;
+    n|no|0) return 1 ;;
+    *) [[ "${default}" == "1" ]] ;;
+  esac
+}
+
+pause_if_interactive() {
+  if [[ "${FROM_MENU}" -eq 1 ]]; then
+    printf '\n'
+    read -r -p "按回车继续..." _dummy
   fi
 }
 
@@ -224,6 +284,10 @@ save_state() {
     printf 'EPUSDT_ACME_EMAIL=%q\n' "${ACME_EMAIL}"
     printf 'EPUSDT_ACCESS_URL=%q\n' "${ACCESS_URL}"
   } > "${STATE_FILE}"
+}
+
+clear_state_file() {
+  rm -f "${STATE_FILE}"
 }
 
 require_root() {
@@ -457,8 +521,32 @@ resolve_group() {
   fi
 }
 
+load_runtime_state_from_env() {
+  local env_file="${INSTALL_DIR}/.env"
+  local uri host port_from_env
+
+  [[ -f "${env_file}" ]] || return 0
+
+  if [[ -z "${ACCESS_URL}" ]]; then
+    uri="$(sed -n 's/^app_uri=//p' "${env_file}" | tail -n1)"
+    [[ -n "${uri}" ]] && ACCESS_URL="${uri}"
+  fi
+
+  if [[ -z "${PORT}" ]]; then
+    port_from_env="$(sed -n 's/^http_listen=.*:\([0-9][0-9]*\)$/\1/p' "${env_file}" | tail -n1)"
+    [[ -n "${port_from_env}" ]] && PORT="${port_from_env}"
+  fi
+
+  if [[ -z "${DOMAIN}" && -n "${ACCESS_URL}" ]]; then
+    host="$(printf '%s' "${ACCESS_URL}" | sed -n 's#^https\?://\([^/:]*\).*$#\1#p')"
+    if [[ -n "${host}" && ! "${host}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+      DOMAIN="${host}"
+    fi
+  fi
+}
+
 prepare_install_values() {
-  local default_port default_uri public_ip
+  local public_ip default_uri
 
   if [[ -z "${INSTALL_DIR}" ]]; then
     INSTALL_DIR="$(suggest_install_dir)"
@@ -504,6 +592,8 @@ prepare_install_values() {
 }
 
 prepare_https_values() {
+  load_runtime_state_from_env
+
   if [[ "${NON_INTERACTIVE}" -eq 0 && ( "${COMMAND}" == "https" || "${FROM_MENU}" -eq 1 ) ]]; then
     DOMAIN="$(prompt_default "域名" "${DOMAIN}")"
     ACME_EMAIL="$(prompt_default "证书邮箱" "${ACME_EMAIL}")"
@@ -570,7 +660,8 @@ nginx_reload() {
 }
 
 write_systemd_service() {
-  local unit_path="/etc/systemd/system/${SERVICE_NAME}.service"
+  local unit_path
+  unit_path="$(service_unit_path)"
   backup_file_if_exists "${unit_path}"
   cat > "${unit_path}" <<EOF
 [Unit]
@@ -863,6 +954,16 @@ enable_https_if_needed() {
   write_nginx_https_config
 }
 
+service_status_label() {
+  if systemctl is-active --quiet "${SERVICE_NAME}.service"; then
+    printf '%s' "running"
+  elif service_exists; then
+    printf '%s' "stopped"
+  else
+    printf '%s' "missing"
+  fi
+}
+
 print_install_summary() {
   local username="$1"
   local password="$2"
@@ -879,6 +980,37 @@ print_install_summary() {
   support_info
 }
 
+show_info() {
+  local local_version="unknown"
+  local latest_version="unknown"
+  local current_state=""
+
+  load_runtime_state_from_env
+
+  if [[ -x "${INSTALL_DIR}/epusdt" ]]; then
+    local_version="$("${INSTALL_DIR}/epusdt" version 2>/dev/null | sed -n 's/^version: //p' | head -n1 || true)"
+    [[ -n "${local_version}" ]] || local_version="unknown"
+  fi
+
+  latest_version="$(get_latest_version 2>/dev/null || true)"
+  [[ -n "${latest_version}" ]] || latest_version="unknown"
+  current_state="$(service_status_label)"
+
+  print_banner
+  printf '实例信息\n'
+  print_line
+  printf '安装目录: %s\n' "${INSTALL_DIR}"
+  printf '服务名: %s\n' "${SERVICE_NAME}"
+  printf '服务状态: %s\n' "${current_state}"
+  printf '当前版本: %s\n' "${local_version}"
+  printf '最新版本: %s\n' "${latest_version}"
+  [[ -n "${PORT}" ]] && printf '监听端口: %s\n' "${PORT}"
+  [[ -n "${ACCESS_URL}" ]] && printf '访问地址: %s\n' "${ACCESS_URL}"
+  [[ -n "${DOMAIN}" ]] && printf '域名: %s\n' "${DOMAIN}"
+  [[ -n "${NGINX_CONF_PATH}" ]] && printf 'Nginx 配置: %s\n' "${NGINX_CONF_PATH}"
+  support_info
+}
+
 do_install() {
   require_root
   require_systemd
@@ -886,6 +1018,10 @@ do_install() {
 
   if [[ -f "${INSTALL_DIR}/epusdt" && "${FORCE}" -ne 1 ]]; then
     die "${INSTALL_DIR} 已存在 epusdt，请使用一键更新；如果要覆盖重装请加 --force"
+  fi
+
+  if service_exists; then
+    systemctl stop "${SERVICE_NAME}.service" >/dev/null 2>&1 || true
   fi
 
   ensure_service_account
@@ -920,6 +1056,7 @@ do_install() {
 do_update() {
   require_root
   require_systemd
+  load_runtime_state_from_env
 
   [[ -x "${INSTALL_DIR}/epusdt" ]] || die "未在 ${INSTALL_DIR} 发现 epusdt"
 
@@ -937,14 +1074,14 @@ do_update() {
   update_release_files "${tmpdir}"
   systemctl restart "${SERVICE_NAME}.service"
 
-  if wait_for_http "http://127.0.0.1:${PORT}/admin/api/v1/auth/init-password-hash" 40; then
+  if [[ -n "${PORT}" ]] && wait_for_http "http://127.0.0.1:${PORT}/admin/api/v1/auth/init-password-hash" 40; then
     success "已更新到 ${VERSION}"
   else
     warn "服务已重启，但接口健康检查未通过"
   fi
 
   save_state
-  printf '访问地址: %s\n' "${ACCESS_URL}"
+  [[ -n "${ACCESS_URL}" ]] && printf '访问地址: %s\n' "${ACCESS_URL}"
   support_info
 }
 
@@ -963,6 +1100,78 @@ do_https() {
   enable_https_if_needed
   save_state
   printf '访问地址: %s\n' "${ACCESS_URL}"
+  support_info
+}
+
+do_uninstall() {
+  require_root
+  require_systemd
+  load_runtime_state_from_env
+
+  local remove_dir=1
+  local remove_https=1
+  local remove_user=1
+  local cert_dir=""
+  local acme_webroot=""
+  local removed_nginx=0
+
+  cert_dir="/etc/ssl/epusdt/${DOMAIN}"
+  acme_webroot="/www/wwwroot/_acme/${DOMAIN}"
+
+  if [[ "${NON_INTERACTIVE}" -eq 0 ]]; then
+    print_banner
+    printf '即将卸载当前实例\n'
+    print_line
+    printf '安装目录: %s\n' "${INSTALL_DIR}"
+    printf '服务名: %s\n' "${SERVICE_NAME}"
+    [[ -n "${ACCESS_URL}" ]] && printf '访问地址: %s\n' "${ACCESS_URL}"
+    [[ -n "${DOMAIN}" ]] && printf '域名: %s\n' "${DOMAIN}"
+    print_line
+    prompt_yes_no "删除安装目录和全部数据" 1 && remove_dir=1 || remove_dir=0
+    if [[ -n "${DOMAIN}" ]]; then
+      prompt_yes_no "删除 HTTPS 配置和证书" 1 && remove_https=1 || remove_https=0
+    else
+      remove_https=0
+    fi
+    prompt_yes_no "删除服务用户 ${SERVICE_USER}" 1 && remove_user=1 || remove_user=0
+  else
+    [[ "${FORCE}" -eq 1 ]] || die "非交互卸载请加 --force"
+  fi
+
+  if service_exists; then
+    systemctl stop "${SERVICE_NAME}.service" >/dev/null 2>&1 || true
+    systemctl disable "${SERVICE_NAME}.service" >/dev/null 2>&1 || true
+  fi
+
+  rm -f "$(service_unit_path)"
+  systemctl daemon-reload
+
+  if [[ "${remove_https}" -eq 1 ]]; then
+    if [[ -z "${NGINX_CONF_PATH}" ]]; then
+      NGINX_CONF_PATH="$(detect_nginx_conf_path || true)"
+    fi
+    if [[ -n "${NGINX_CONF_PATH}" && -f "${NGINX_CONF_PATH}" ]]; then
+      rm -f "${NGINX_CONF_PATH}"
+      removed_nginx=1
+    fi
+    [[ -d "${cert_dir}" ]] && rm -rf "${cert_dir}"
+    [[ -d "${acme_webroot}" ]] && rm -rf "${acme_webroot}"
+  fi
+
+  if [[ "${remove_dir}" -eq 1 && -d "${INSTALL_DIR}" ]]; then
+    rm -rf "${INSTALL_DIR}"
+  fi
+
+  if [[ "${remove_user}" -eq 1 && "$(id -u "${SERVICE_USER}" >/dev/null 2>&1; printf '%s' "$?")" == "0" ]]; then
+    userdel "${SERVICE_USER}" >/dev/null 2>&1 || true
+  fi
+
+  if [[ "${removed_nginx}" -eq 1 ]] && detect_nginx_binary >/dev/null 2>&1; then
+    nginx_reload || warn "Nginx 配置已删除，但重载失败，请手动重载"
+  fi
+
+  clear_state_file
+  success "卸载完成"
   support_info
 }
 
@@ -995,78 +1204,79 @@ do_logs() {
   journalctl -u "${SERVICE_NAME}.service" -n 200 --no-pager
 }
 
-show_version() {
-  local local_version="unknown"
-  local latest_version="unknown"
-  if [[ -x "${INSTALL_DIR}/epusdt" ]]; then
-    local_version="$("${INSTALL_DIR}/epusdt" version 2>/dev/null | sed -n 's/^version: //p' | head -n1 || true)"
-    [[ -n "${local_version}" ]] || local_version="unknown"
-  fi
-  latest_version="$(get_latest_version 2>/dev/null || true)"
-  [[ -n "${latest_version}" ]] || latest_version="unknown"
+menu_manage() {
+  while true; do
+    print_banner
+    menu_item "1" "查看状态" "systemd 当前状态"
+    menu_item "2" "查看日志" "最近 200 行日志"
+    menu_item "3" "启动服务" "启动当前实例"
+    menu_item "4" "重启服务" "重启当前实例"
+    menu_item "5" "停止服务" "停止当前实例"
+    menu_item "0" "返回上级" "返回主菜单"
+    printf '\n'
 
-  print_banner
-  printf '安装目录：%s\n' "${INSTALL_DIR}"
-  printf '服务名：%s\n' "${SERVICE_NAME}"
-  printf '当前版本：%s\n' "${local_version}"
-  printf '最新版本：%s\n' "${latest_version}"
-  if [[ -n "${ACCESS_URL}" ]]; then
-    printf '访问地址：%s\n' "${ACCESS_URL}"
-  fi
-  support_info
+    local mgmt=""
+    mgmt="$(prompt_default "请选择" "1")"
+    case "${mgmt}" in
+      1) do_status ;;
+      2) do_logs ;;
+      3) do_start ;;
+      4) do_restart ;;
+      5) do_stop ;;
+      0) return 0 ;;
+      *) warn "无效选项" ;;
+    esac
+    pause_if_interactive
+  done
 }
 
 menu_loop() {
   while true; do
     print_banner
-    echo "1. 开始部署"
-    echo "2. 一键更新"
-    echo "3. 配置 HTTPS"
-    echo "4. 日常管理"
-    echo "5. 检查版本"
-    echo "0. 退出"
-    echo ""
+    menu_item "1" "开始部署" "自动安装并回显后台账号密码"
+    menu_item "2" "一键更新" "拉取官方最新 release"
+    menu_item "3" "配置 HTTPS" "申请证书并强制跳转 https"
+    menu_item "4" "运行管理" "状态 / 日志 / 启停 / 重启"
+    menu_item "5" "实例信息" "目录 / 版本 / 地址 / 服务状态"
+    menu_item "6" "一键卸载" "删除服务与部署文件"
+    menu_item "0" "退出脚本" "结束本次操作"
+    printf '\n'
+
     local choice=""
     choice="$(prompt_default "请选择" "1")"
     case "${choice}" in
       1)
         FROM_MENU=1
         do_install
-        FROM_MENU=0
+        pause_if_interactive
         ;;
-      2) do_update ;;
+      2)
+        FROM_MENU=1
+        do_update
+        pause_if_interactive
+        ;;
       3)
         FROM_MENU=1
         do_https
-        FROM_MENU=0
+        pause_if_interactive
         ;;
       4)
-        print_banner
-        echo "1. 查看服务状态"
-        echo "2. 查看日志"
-        echo "3. 启动服务"
-        echo "4. 重启服务"
-        echo "5. 停止服务"
-        echo "6. 返回上级菜单"
-        echo ""
-        local mgmt=""
-        mgmt="$(prompt_default "请选择" "1")"
-        case "${mgmt}" in
-          1) do_status ;;
-          2) do_logs ;;
-          3) do_start ;;
-          4) do_restart ;;
-          5) do_stop ;;
-          6) ;;
-          *) warn "无效选项" ;;
-        esac
+        FROM_MENU=1
+        menu_manage
         ;;
-      5) show_version ;;
+      5)
+        FROM_MENU=1
+        show_info
+        pause_if_interactive
+        ;;
+      6)
+        FROM_MENU=1
+        do_uninstall
+        pause_if_interactive
+        ;;
       0) exit 0 ;;
       *) warn "无效选项" ;;
     esac
-    printf '\n'
-    read -r -p "按回车继续..." _dummy
   done
 }
 
@@ -1075,12 +1285,13 @@ case "${COMMAND}" in
   install) do_install ;;
   update) do_update ;;
   https) do_https ;;
+  info|version) show_info ;;
+  uninstall) do_uninstall ;;
   start) do_start ;;
   restart) do_restart ;;
   stop) do_stop ;;
   status) do_status ;;
   logs) do_logs ;;
-  version) show_version ;;
   "") menu_loop ;;
   help|-h|--help) usage ;;
   *) die "未知命令: ${COMMAND}，可直接运行进入菜单，或使用 --help 查看命令行参数" ;;
