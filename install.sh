@@ -141,8 +141,8 @@ print_plain_banner() {
   printf "${B}================================================================${NC}\n"
   printf "${W}  EPUSDT 一键部署与运维脚本${NC}\n"
   printf "${C}  鱼肥肥 @pyufc${NC}\n"
-  printf "${C}  Telegram: https://t.me/pyufc${NC}\n"
-  printf "${C}  GitHub: Yufeifeio/epusdt-Install${NC}\n"
+  printf "${C}  联系地址: https://t.me/pyufc${NC}\n"
+  printf "${C}  发布仓库: Yufeifeio/epusdt-Install${NC}\n"
   printf "${B}================================================================${NC}\n"
   printf '\n'
 }
@@ -156,7 +156,7 @@ print_banner() {
   printf '\n'
   printf '%b\n' "${BM}╔══════════════════════════════════════════════════════════╗${NC}"
   printf '%b\n' "${BM}║             🐟 EPUSDT 一键部署与运维脚本              ║${NC}"
-  printf '%b\n' "${BM}║      鱼肥肥 @pyufc   Telegram: https://t.me/pyufc      ║${NC}"
+  printf '%b\n' "${BM}║        鱼肥肥 @pyufc   联系: https://t.me/pyufc        ║${NC}"
   printf '%b\n' "${BM}╚══════════════════════════════════════════════════════════╝${NC}"
   printf '%b\n' "${C}███████╗██████╗ ██╗   ██╗███████╗██████╗ ████████╗${NC}"
   printf '%b\n' "${C}██╔════╝██╔══██╗██║   ██║██╔════╝██╔══██╗╚══██╔══╝${NC}"
@@ -164,7 +164,7 @@ print_banner() {
   printf '%b\n' "${C}██╔══╝  ██╔═══╝ ██║   ██║╚════██║██║  ██║   ██║   ${NC}"
   printf '%b\n' "${C}███████╗██║     ╚██████╔╝███████║██████╔╝   ██║   ${NC}"
   printf '%b\n' "${C}╚══════╝╚═╝      ╚═════╝ ╚══════╝╚═════╝    ╚═╝   ${NC}"
-  printf '%b\n' "${W}鱼肥肥 @pyufc  |  GitHub: Yufeifeio/epusdt-Install${NC}"
+  printf '%b\n' "${W}鱼肥肥 @pyufc  |  发布仓库: Yufeifeio/epusdt-Install${NC}"
   printf '\n'
 }
 
@@ -178,8 +178,8 @@ menu_item() {
 support_info() {
   printf '\n'
   printf '鱼肥肥 @pyufc\n'
-  printf 'Telegram: https://t.me/pyufc\n'
-  printf 'GitHub: https://github.com/Yufeifeio/epusdt-Install\n'
+  printf '联系地址: https://t.me/pyufc\n'
+  printf '仓库地址: https://github.com/Yufeifeio/epusdt-Install\n'
 }
 
 usage() {
@@ -190,6 +190,7 @@ usage() {
   bash install.sh install [参数]
   bash install.sh adopt [参数]
   bash install.sh update [参数]
+  bash install.sh https [参数]
   bash install.sh doctor
   bash install.sh info
   bash install.sh uninstall [参数]
@@ -205,7 +206,7 @@ usage() {
   --service-name NAME
   --service-user USER
   --service-group GROUP
-  --version VERSION|latest
+  --version VERSION|latest  指定安装/更新目标版本（update 时指定版本会强制重装）
   --domain DOMAIN
   --port PORT
   --bind-addr ADDR
@@ -290,6 +291,14 @@ validate_service_name() {
   local value="$1"
   [[ -n "${value}" ]] || die "服务名不能为空"
   [[ "${value}" =~ ^[A-Za-z0-9_.@-]+$ ]] || die "服务名只能包含字母、数字、点、下划线、横线和 @ 符号: ${value}"
+}
+
+validate_domain() {
+  local value="$1"
+  [[ -n "${value}" ]] || return 0
+  [[ "${value}" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] || die "域名格式不合法，不能包含空格或特殊字符: ${value}"
+  [[ "${value}" != *..* ]] || die "域名不能包含连续的点: ${value}"
+  [[ "${#value}" -le 253 ]] || die "域名长度不能超过 253 个字符"
 }
 
 validate_account_name() {
@@ -584,6 +593,7 @@ prompt_yes_no() {
 pause_if_interactive() {
   if [[ "${FROM_MENU}" -eq 1 && -t 0 ]]; then
     printf '\n'
+    local _dummy
     read -r -p "按回车继续..." _dummy
   fi
 }
@@ -1005,8 +1015,9 @@ prepare_install_values() {
     WITH_NGINX="1"
     BIND_ADDR="127.0.0.1"
     ensure_acme_email
+    validate_domain "${DOMAIN}"
     validate_domain_for_https
-    APP_URI="https://${DOMAIN}"
+    APP_URI="http://${DOMAIN}"
     ACCESS_URL="${APP_URI}"
   else
     WITH_NGINX="0"
@@ -1077,6 +1088,7 @@ prepare_https_values() {
   fi
 
   [[ -n "${DOMAIN}" ]] || die "请先提供域名"
+  validate_domain "${DOMAIN}"
   ensure_acme_email
   [[ -n "${PORT}" ]] || PORT="$(find_available_port 8000)"
   resolve_group
@@ -1223,11 +1235,26 @@ validate_explicit_nginx_conf_path() {
 }
 
 nginx_reload() {
-  local nginx_bin
+  local conf_path_for_rollback="${1:-}"
+  local nginx_bin nginx_test_output
   nginx_bin="$(detect_nginx_binary || true)"
   [[ -n "${nginx_bin}" ]] || die "已写入 nginx 配置，但未找到 nginx 可执行文件"
 
-  "${nginx_bin}" -t
+  if ! nginx_test_output="$("${nginx_bin}" -t 2>&1)"; then
+    printf '%s\n' "${nginx_test_output}" >&2
+    if [[ -n "${conf_path_for_rollback}" ]]; then
+      local backup
+      backup="$(ls -t "${conf_path_for_rollback}.bak."* 2>/dev/null | head -1 || true)"
+      if [[ -n "${backup}" && -f "${backup}" ]]; then
+        cp -f "${backup}" "${conf_path_for_rollback}"
+        warn "Nginx 配置语法检查失败，已自动恢复备份: ${backup}"
+      else
+        rm -f "${conf_path_for_rollback}"
+        warn "Nginx 配置语法检查失败，已删除无效配置文件: ${conf_path_for_rollback}"
+      fi
+    fi
+    die "Nginx 配置语法检查失败，请检查上面的错误信息"
+  fi
 
   if [[ "${nginx_bin}" == "/www/server/nginx/sbin/nginx" ]]; then
     if pgrep -x nginx >/dev/null 2>&1; then
@@ -1241,7 +1268,7 @@ nginx_reload() {
   if systemctl is-active --quiet nginx; then
     systemctl reload nginx
   else
-    systemctl start nginx
+    systemctl start nginx || die "Nginx 启动失败，请检查配置后手动执行 systemctl start nginx"
   fi
 }
 
@@ -1862,7 +1889,7 @@ $(nginx_proxy_block)
 }
 EOF
 
-  nginx_reload
+  nginx_reload "${conf_path}"
 }
 
 write_nginx_https_config() {
@@ -1911,7 +1938,7 @@ $(nginx_proxy_block)
 }
 EOF
 
-  nginx_reload
+  nginx_reload "${conf_path}"
   success "HTTPS 已启用并强制跳转"
 }
 
@@ -1953,8 +1980,28 @@ issue_certificate() {
 enable_https_if_needed() {
   [[ -n "${DOMAIN}" ]] || return 0
   write_nginx_http_config
-  issue_certificate
+
+  local cert_exit=0
+  (issue_certificate) || cert_exit=$?
+
+  if [[ "${cert_exit}" -ne 0 ]]; then
+    warn "HTTPS 证书申请失败（退出码 ${cert_exit}），已回退为 HTTP 模式"
+    warn "请确认域名 DNS 解析正确、80 端口可访问后，运行 bash install.sh https 重新申请"
+    APP_URI="http://${DOMAIN}"
+    ACCESS_URL="${APP_URI}"
+    if [[ -f "${INSTALL_DIR}/.env" ]]; then
+      set_env_value "${INSTALL_DIR}/.env" "app_uri" "${APP_URI}"
+      set_env_value "${INSTALL_DIR}/.env" "http_listen" "0.0.0.0:${PORT}"
+    fi
+    return 1
+  fi
+
   write_nginx_https_config
+  APP_URI="https://${DOMAIN}"
+  ACCESS_URL="${APP_URI}"
+  if [[ -f "${INSTALL_DIR}/.env" ]]; then
+    set_env_value "${INSTALL_DIR}/.env" "app_uri" "${APP_URI}"
+  fi
 }
 
 service_status_label() {
@@ -2106,6 +2153,7 @@ do_doctor() {
     doctor_ok "安装目录存在"
   else
     doctor_fail "安装目录不存在: ${INSTALL_DIR}"
+    printf '  → 请先执行安装或用 --install-dir 指定正确路径\n'
     failures=$((failures + 1))
   fi
 
@@ -2113,13 +2161,15 @@ do_doctor() {
     doctor_ok "程序文件存在并可执行"
   else
     doctor_fail "未找到可执行文件: ${INSTALL_DIR}/epusdt"
+    printf '  → 请执行: bash install.sh install --install-dir %s\n' "${INSTALL_DIR}"
     failures=$((failures + 1))
   fi
 
   if [[ -f "${INSTALL_DIR}/.env" ]]; then
     doctor_ok ".env 配置文件存在"
   else
-    doctor_fail "未找到 .env 配置文件"
+    doctor_fail "未找到 .env 配置文件: ${INSTALL_DIR}/.env"
+    printf '  → 请执行: bash install.sh install --install-dir %s\n' "${INSTALL_DIR}"
     failures=$((failures + 1))
   fi
 
@@ -2129,11 +2179,14 @@ do_doctor() {
     if [[ -n "${unit_dir}" && "${unit_dir}" == "${INSTALL_DIR}" ]]; then
       doctor_ok "服务目录匹配当前安装目录"
     elif [[ -n "${unit_dir}" ]]; then
-      doctor_fail "服务目录不匹配，当前服务指向: ${unit_dir}"
+      doctor_fail "服务目录不匹配，当前服务指向: ${unit_dir}，期望: ${INSTALL_DIR}"
+      printf '  → 请使用 --install-dir %s 或 --service-name 指定正确实例\n' "${unit_dir}"
       failures=$((failures + 1))
     fi
   else
-    doctor_fail "systemd 服务不存在，请先安装或接管"
+    doctor_fail "systemd 服务不存在（服务名: ${SERVICE_NAME}），请先安装或接管"
+    printf '  → 安装: bash install.sh install --install-dir %s\n' "${INSTALL_DIR}"
+    printf '  → 接管: bash install.sh adopt --install-dir %s\n' "${INSTALL_DIR}"
     failures=$((failures + 1))
   fi
 
@@ -2142,6 +2195,8 @@ do_doctor() {
     doctor_ok "服务运行中"
   else
     doctor_fail "服务未运行，当前状态: ${active_state:-未知}"
+    printf '  → 请执行: bash install.sh start\n'
+    printf '  → 查看日志: bash install.sh logs\n'
     failures=$((failures + 1))
   fi
 
@@ -2150,6 +2205,7 @@ do_doctor() {
     doctor_ok "已设置开机自启"
   else
     doctor_fail "未设置开机自启，当前状态: ${enabled_state:-未知}"
+    printf '  → 请执行: systemctl enable %s.service\n' "${SERVICE_NAME}"
     failures=$((failures + 1))
   fi
 
@@ -2159,6 +2215,7 @@ do_doctor() {
     else
       doctor_fail "端口 ${PORT} 未被当前服务正确监听"
       port_listeners "${PORT}" || true
+      printf '  → 请执行: bash install.sh restart\n'
       failures=$((failures + 1))
     fi
 
@@ -2166,11 +2223,13 @@ do_doctor() {
     if [[ "${code}" =~ ^(200|301|302|307|308)$ ]]; then
       doctor_ok "本机应用接口可访问，HTTP ${code}"
     else
-      doctor_fail "本机应用接口不可访问，HTTP ${code}"
+      doctor_fail "本机应用接口不可访问，HTTP ${code}（服务可能崩溃）"
+      printf '  → 请执行: bash install.sh logs\n'
+      printf '  → 然后执行: bash install.sh restart\n'
       failures=$((failures + 1))
     fi
   else
-    doctor_fail "未识别监听端口"
+    doctor_fail "未识别监听端口，请检查 ${INSTALL_DIR}/.env 中的 http_listen 配置"
     failures=$((failures + 1))
   fi
 
@@ -2183,25 +2242,40 @@ do_doctor() {
       doctor_ok "域名解析指向当前服务器"
     else
       doctor_fail "域名解析不匹配。当前公网 IP: ${public_ip}，域名解析: ${resolved_ips}"
+      printf '  → 请在 DNS 控制台将 %s 的 A 记录指向 %s\n' "${DOMAIN}" "${public_ip}"
       failures=$((failures + 1))
     fi
 
-    if [[ -n "${NGINX_CONF_PATH}" && -f "${NGINX_CONF_PATH}" ]]; then
-      doctor_ok "Nginx 配置存在: ${NGINX_CONF_PATH}"
+    local nginx_conf_check="${NGINX_CONF_PATH}"
+    if [[ -z "${nginx_conf_check}" ]]; then
+      nginx_conf_check="$(detect_nginx_conf_path 2>/dev/null || true)"
+    fi
+
+    if [[ -n "${nginx_conf_check}" && -f "${nginx_conf_check}" ]]; then
+      doctor_ok "Nginx 配置存在: ${nginx_conf_check}"
     else
-      doctor_fail "未找到当前域名的 Nginx 配置"
-      failures=$((failures + 1))
+      # 先检查 HTTPS 是否实际可用，如可用则降级为警告
+      local https_check
+      https_check="$(http_code_insecure "https://${DOMAIN}/admin" 2>/dev/null || true)"
+      if [[ "${https_check}" =~ ^(200|301|302|307|308)$ ]]; then
+        doctor_warn "未在脚本默认路径找到 Nginx 配置，但 HTTPS 已正常工作（可能已手动配置）"
+        warnings=$((warnings + 1))
+      else
+        doctor_fail "未找到当前域名的 Nginx 配置，HTTPS 也不可访问"
+        printf '  → 请运行: bash install.sh https --install-dir %s\n' "${INSTALL_DIR}"
+        failures=$((failures + 1))
+      fi
     fi
 
     if detect_nginx_binary >/dev/null 2>&1; then
       if "$(detect_nginx_binary)" -t >/dev/null 2>&1; then
         doctor_ok "Nginx 配置语法正常"
       else
-        doctor_fail "Nginx 配置语法检查失败，请执行 nginx -t 查看详情"
+        doctor_fail "Nginx 配置语法检查失败，请执行: $(detect_nginx_binary) -t"
         failures=$((failures + 1))
       fi
     else
-      doctor_fail "未找到 Nginx"
+      doctor_fail "未找到 Nginx 可执行文件"
       failures=$((failures + 1))
     fi
 
@@ -2210,6 +2284,7 @@ do_doctor() {
       doctor_ok "HTTPS 后台页面可访问，HTTP ${code}"
     else
       doctor_fail "HTTPS 后台页面不可访问，HTTP ${code}"
+      printf '  → 请运行: bash install.sh https --install-dir %s\n' "${INSTALL_DIR}"
       failures=$((failures + 1))
     fi
 
@@ -2217,7 +2292,7 @@ do_doctor() {
     if [[ "${code}" =~ ^(301|302|307|308)$ ]]; then
       doctor_ok "HTTP 已跳转到 HTTPS，HTTP ${code}"
     else
-      doctor_warn "HTTP 跳转状态不是 30x，当前 HTTP ${code}"
+      doctor_warn "HTTP 跳转状态不是 30x，当前 HTTP ${code}（如使用 CDN 可忽略）"
       warnings=$((warnings + 1))
     fi
   else
@@ -2279,12 +2354,13 @@ do_install() {
   local tmpdir arch admin_info admin_user admin_pass
   tmpdir="$(mktemp -d)"
   arch="$(detect_arch)"
+  # shellcheck disable=SC2064
   trap "cleanup_tmpdir '${tmpdir}'" EXIT
 
   download_release "${VERSION}" "${arch}" "${tmpdir}"
   install_release_files "${tmpdir}" "install"
   write_systemd_service
-  enable_https_if_needed
+  enable_https_if_needed || true
   prepare_instance_for_update_restart
   systemctl restart "${SERVICE_NAME}.service"
   ensure_service_owns_port
@@ -2295,7 +2371,7 @@ do_install() {
   admin_pass="$(printf '%s' "${admin_info}" | sed -n '2p')"
   verify_admin_login "${admin_user}" "${admin_pass}"
 
-  if [[ -n "${DOMAIN}" ]]; then
+  if [[ -n "${DOMAIN}" && "${ACCESS_URL}" == https://* ]]; then
     wait_for_http "https://${DOMAIN}/admin/api/v1/auth/init-password-hash" 20 || warn "外部 HTTPS 检查暂未通过，请确认防火墙和 CDN 配置"
   fi
 
@@ -2330,7 +2406,7 @@ do_update() {
   installed_version="$(get_installed_version || true)"
   VERSION="$(normalize_version "${VERSION}")"
 
-  if [[ -n "${installed_version}" && "${installed_version}" == "${VERSION}" ]]; then
+  if [[ -n "${installed_version}" && "${installed_version}" == "${VERSION}" && "${VERSION_EXPLICIT}" -eq 0 ]]; then
     prepare_instance_for_service_start
     systemctl restart "${SERVICE_NAME}.service"
     ensure_service_owns_port
@@ -2347,6 +2423,7 @@ do_update() {
   local tmpdir arch
   tmpdir="$(mktemp -d)"
   arch="$(detect_arch)"
+  # shellcheck disable=SC2064
   trap "cleanup_tmpdir '${tmpdir}'" EXIT
 
   download_release "${VERSION}" "${arch}" "${tmpdir}"
@@ -2376,7 +2453,9 @@ do_https() {
   service_exists || die "未找到服务 ${SERVICE_NAME}，无法配置 HTTPS，请先完成安装或修复服务"
   ensure_service_directory_matches
   prepare_https_values
-  set_env_value "${INSTALL_DIR}/.env" "app_uri" "${APP_URI}"
+  # 先以 http 模式重启，确保服务正常运行；证书申请成功后再更新为 https
+  local http_app_uri="http://${DOMAIN}"
+  set_env_value "${INSTALL_DIR}/.env" "app_uri" "${http_app_uri}"
   set_env_value "${INSTALL_DIR}/.env" "http_listen" "${BIND_ADDR}:${PORT}"
   prepare_instance_for_service_start
 
@@ -2384,7 +2463,7 @@ do_https() {
 
   ensure_service_owns_port
   wait_for_app_api
-  enable_https_if_needed
+  enable_https_if_needed || true
   save_state
   printf '访问地址: %s\n' "${ACCESS_URL}"
   support_info
@@ -2475,8 +2554,17 @@ do_uninstall() {
     rm -rf "${INSTALL_DIR}"
   fi
 
-  if [[ "${remove_user}" -eq 1 && "$(id -u "${SERVICE_USER}" >/dev/null 2>&1; printf '%s' "$?")" == "0" ]]; then
-    userdel "${SERVICE_USER}" >/dev/null 2>&1 || true
+  if [[ "${remove_user}" -eq 1 ]] && id -u "${SERVICE_USER}" >/dev/null 2>&1; then
+    local other_unit_files=""
+    other_unit_files="$(grep -rl "^User=${SERVICE_USER}$" /etc/systemd/system/ 2>/dev/null \
+      | grep -vF "$(service_unit_path)" \
+      | grep -v '\.bak\.' \
+      | head -3 || true)"
+    if [[ -n "${other_unit_files}" ]]; then
+      warn "服务用户 ${SERVICE_USER} 还被其他服务使用，已跳过删除用户: ${other_unit_files}"
+    else
+      userdel "${SERVICE_USER}" >/dev/null 2>&1 || true
+    fi
   fi
 
   if [[ "${removed_nginx}" -eq 1 ]] && detect_nginx_binary >/dev/null 2>&1; then
@@ -2575,7 +2663,7 @@ menu_loop() {
     print_banner
     menu_item "1" "开始部署" "填域名自动 HTTPS，回显账号密码"
     menu_item "2" "接管旧实例" "保留原数据并纳入脚本托管"
-    menu_item "3" "一键更新" "拉取官方最新版本"
+    menu_item "3" "一键更新" "拉取官方最新 release"
     menu_item "4" "运行管理" "状态 / 日志 / 启停 / 补配 HTTPS"
     menu_item "5" "实例信息" "目录 / 版本 / 地址 / 服务状态"
     menu_item "6" "一键自检" "服务 / 端口 / HTTPS / 解析"
