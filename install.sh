@@ -28,7 +28,7 @@ DEFAULT_INSTALL_DIR="$(suggest_install_dir)"
 DEFAULT_SERVICE_NAME="${EPUSDT_SERVICE_NAME:-epusdt}"
 DEFAULT_SERVICE_USER="${EPUSDT_SERVICE_USER:-epusdt}"
 DEFAULT_SERVICE_GROUP="${EPUSDT_SERVICE_GROUP:-${DEFAULT_SERVICE_USER}}"
-DEFAULT_VERSION="${EPUSDT_VERSION:-latest}"
+DEFAULT_VERSION="latest"
 DEFAULT_DOMAIN="${EPUSDT_DOMAIN:-}"
 DEFAULT_APP_NAME="${EPUSDT_APP_NAME:-epusdt}"
 DEFAULT_BIND_ADDR="${EPUSDT_BIND_ADDR:-}"
@@ -55,6 +55,7 @@ APP_NAME_EXPLICIT=0
 API_RATE_URL_EXPLICIT=0
 NGINX_CONF_PATH_EXPLICIT=0
 ACME_EMAIL_EXPLICIT=0
+VERSION_EXPLICIT=0
 INSTALL_DIR="${DEFAULT_INSTALL_DIR}"
 SERVICE_NAME="${DEFAULT_SERVICE_NAME}"
 SERVICE_USER="${DEFAULT_SERVICE_USER}"
@@ -160,6 +161,7 @@ usage() {
   bash install.sh
   bash install.sh menu
   bash install.sh install [参数]
+  bash install.sh adopt [参数]
   bash install.sh update [参数]
   bash install.sh https [参数]
   bash install.sh info
@@ -203,7 +205,7 @@ while [[ $# -gt 0 ]]; do
     --service-name) SERVICE_NAME="$2"; SERVICE_NAME_EXPLICIT=1; shift 2 ;;
     --service-user) SERVICE_USER="$2"; SERVICE_USER_EXPLICIT=1; shift 2 ;;
     --service-group) SERVICE_GROUP="$2"; SERVICE_GROUP_EXPLICIT=1; shift 2 ;;
-    --version) VERSION="$2"; shift 2 ;;
+    --version) VERSION="$2"; VERSION_EXPLICIT=1; shift 2 ;;
     --domain) DOMAIN="$2"; DOMAIN_EXPLICIT=1; shift 2 ;;
     --port) PORT="$2"; PORT_EXPLICIT=1; shift 2 ;;
     --bind-addr) BIND_ADDR="$2"; BIND_ADDR_EXPLICIT=1; shift 2 ;;
@@ -278,6 +280,19 @@ ensure_existing_instance() {
     return 0
   fi
   die "未识别到可管理的实例，请先执行安装，或使用 --install-dir 指定正确目录"
+}
+
+require_existing_installation_files() {
+  [[ -x "${INSTALL_DIR}/epusdt" ]] || die "未在 ${INSTALL_DIR} 发现可执行文件 epusdt"
+  [[ -f "${INSTALL_DIR}/.env" ]] || die "未在 ${INSTALL_DIR} 发现 .env，无法接管"
+}
+
+existing_install_complete() {
+  local env_file="${INSTALL_DIR}/.env"
+  local install_flag=""
+  [[ -f "${env_file}" ]] || return 1
+  install_flag="$(sed -n 's/^install=//p' "${env_file}" | tail -n1 | tr '[:upper:]' '[:lower:]')"
+  [[ "${install_flag}" != "true" ]]
 }
 
 trim() {
@@ -361,6 +376,20 @@ backup_file_if_exists() {
   if [[ -f "${file}" ]]; then
     cp -f "${file}" "${file}.bak.$(date +%Y%m%d%H%M%S)"
   fi
+}
+
+detect_path_owner_user() {
+  local path="$1"
+  local value=""
+  value="$(stat -c '%U' "${path}" 2>/dev/null || true)"
+  [[ -n "${value}" ]] && printf '%s' "${value}" || printf '%s' "root"
+}
+
+detect_path_owner_group() {
+  local path="$1"
+  local value=""
+  value="$(stat -c '%G' "${path}" 2>/dev/null || true)"
+  [[ -n "${value}" ]] && printf '%s' "${value}" || printf '%s' "root"
 }
 
 save_state() {
@@ -705,6 +734,53 @@ prepare_install_values() {
   VERSION="$(normalize_version "${VERSION}")"
 }
 
+prepare_adopt_values() {
+  local owner_user owner_group
+
+  if [[ -z "${INSTALL_DIR}" ]]; then
+    INSTALL_DIR="$(suggest_install_dir)"
+  fi
+
+  if [[ "${NON_INTERACTIVE}" -eq 0 && ( "${COMMAND}" == "adopt" || "${FROM_MENU}" -eq 1 ) ]]; then
+    INSTALL_DIR="$(prompt_default "现有实例目录" "${INSTALL_DIR}")"
+  fi
+
+  validate_install_dir "${INSTALL_DIR}"
+  require_existing_installation_files
+  load_runtime_state_from_env
+
+  owner_user="$(detect_path_owner_user "${INSTALL_DIR}")"
+  owner_group="$(detect_path_owner_group "${INSTALL_DIR}")"
+
+  if [[ "${SERVICE_USER_EXPLICIT}" -eq 0 && -n "${owner_user}" && "${owner_user}" != "root" && "${owner_user}" != "UNKNOWN" ]]; then
+    SERVICE_USER="${owner_user}"
+  fi
+  if [[ "${SERVICE_GROUP_EXPLICIT}" -eq 0 && -n "${owner_group}" && "${owner_group}" != "root" && "${owner_group}" != "UNKNOWN" ]]; then
+    SERVICE_GROUP="${owner_group}"
+  fi
+
+  if [[ "${NON_INTERACTIVE}" -eq 0 && ( "${COMMAND}" == "adopt" || "${FROM_MENU}" -eq 1 ) ]]; then
+    SERVICE_NAME="$(prompt_default "服务名" "${SERVICE_NAME}")"
+    SERVICE_USER="$(prompt_default "服务用户" "${SERVICE_USER}")"
+    SERVICE_GROUP="$(prompt_default "服务用户组" "${SERVICE_GROUP}")"
+  fi
+
+  resolve_group
+  validate_runtime_settings
+  [[ -n "${PORT}" ]] || die "未能从现有 .env 识别监听端口，请先检查 http_listen 配置"
+  validate_port "${PORT}" || die "端口不合法: ${PORT}"
+  if [[ -z "${ACCESS_URL}" || "${ACCESS_URL}" == "http://127.0.0.1:${PORT}" || "${ACCESS_URL}" == "http://0.0.0.0:${PORT}" ]]; then
+    ACCESS_URL="http://$(detect_public_ip):${PORT}"
+  fi
+
+  if ! existing_install_complete; then
+    die "检测到当前实例仍处于安装模式，请先完成现有安装流程后再接管"
+  fi
+
+  VERSION="$("${INSTALL_DIR}/epusdt" version 2>/dev/null | sed -n 's/^version: //p' | head -n1 || true)"
+  [[ -n "${VERSION}" ]] || VERSION="unknown"
+}
+
 prepare_https_values() {
   load_runtime_state_from_env
 
@@ -860,6 +936,28 @@ EOF
   systemctl enable "${SERVICE_NAME}.service"
 }
 
+stop_conflicting_instance_processes() {
+  local pids=""
+  pids="$(pgrep -f "${INSTALL_DIR}/epusdt --config ${INSTALL_DIR} http start" || true)"
+  [[ -n "${pids}" ]] || return 0
+
+  info "发现旧的手动运行进程，准备切换为 systemd 托管"
+  while IFS= read -r pid; do
+    [[ -n "${pid}" ]] || continue
+    kill "${pid}" 2>/dev/null || true
+  done <<< "${pids}"
+
+  sleep 2
+
+  pids="$(pgrep -f "${INSTALL_DIR}/epusdt --config ${INSTALL_DIR} http start" || true)"
+  if [[ -n "${pids}" ]]; then
+    while IFS= read -r pid; do
+      [[ -n "${pid}" ]] || continue
+      kill -9 "${pid}" 2>/dev/null || true
+    done <<< "${pids}"
+  fi
+}
+
 install_release_files() {
   local tmpdir="$1"
   local mode="$2"
@@ -924,6 +1022,11 @@ update_release_files() {
   find "${INSTALL_DIR}" -maxdepth 1 -type f \( -name 'epusdt-*.tar.gz' -o -name 'SHA256SUMS*' \) -delete 2>/dev/null || true
 
   chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${INSTALL_DIR}"
+}
+
+cleanup_safe_install_artifacts() {
+  rm -f "${INSTALL_DIR}/.env.example" "${INSTALL_DIR}/SHA256SUMS"
+  find "${INSTALL_DIR}" -maxdepth 1 -type f \( -name 'epusdt-*.tar.gz' -o -name 'SHA256SUMS*' \) -delete 2>/dev/null || true
 }
 
 wait_for_http() {
@@ -1162,6 +1265,20 @@ print_install_summary() {
   support_info
 }
 
+print_adopt_summary() {
+  success "接管完成"
+  printf '\n'
+  printf '当前版本: %s\n' "${VERSION}"
+  printf '安装目录: %s\n' "${INSTALL_DIR}"
+  printf '服务名: %s\n' "${SERVICE_NAME}"
+  printf '服务用户: %s:%s\n' "${SERVICE_USER}" "${SERVICE_GROUP}"
+  [[ -n "${PORT}" ]] && printf '监听端口: %s\n' "${PORT}"
+  [[ -n "${ACCESS_URL}" ]] && printf '访问地址: %s\n' "${ACCESS_URL}"
+  printf '数据状态: 已保留原有数据库与配置\n'
+  printf '后续维护: 现在可直接使用一键更新\n'
+  support_info
+}
+
 show_info() {
   local local_version="未知"
   local latest_version="未知"
@@ -1239,6 +1356,33 @@ do_install() {
 
   save_state
   print_install_summary "${admin_user}" "${admin_pass}"
+}
+
+do_adopt() {
+  require_root
+  require_systemd
+  prepare_adopt_values
+
+  if service_exists && [[ -f "$(service_unit_path)" ]] && ! grep -qF "WorkingDirectory=${INSTALL_DIR}" "$(service_unit_path)"; then
+    die "服务 ${SERVICE_NAME} 已存在，但不属于当前目录 ${INSTALL_DIR}，请更换服务名后再接管"
+  fi
+
+  if service_exists; then
+    info "发现同名服务 ${SERVICE_NAME}，将覆盖服务定义并重新接管"
+    systemctl stop "${SERVICE_NAME}.service" >/dev/null 2>&1 || true
+  fi
+
+  ensure_service_account
+  resolve_group
+  install_packages "0"
+  chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${INSTALL_DIR}"
+  cleanup_safe_install_artifacts
+  stop_conflicting_instance_processes
+  write_systemd_service
+  systemctl restart "${SERVICE_NAME}.service"
+  wait_for_app_api
+  save_state
+  print_adopt_summary
 }
 
 do_update() {
@@ -1445,11 +1589,12 @@ menu_loop() {
   while true; do
     print_banner
     menu_item "1" "开始部署" "自动安装并回显后台账号密码"
-    menu_item "2" "一键更新" "拉取官方最新 release"
-    menu_item "3" "配置 HTTPS" "申请证书并强制跳转 https"
-    menu_item "4" "运行管理" "状态 / 日志 / 启停 / 重启"
-    menu_item "5" "实例信息" "目录 / 版本 / 地址 / 服务状态"
-    menu_item "6" "一键卸载" "删除服务与部署文件"
+    menu_item "2" "接管旧实例" "保留原数据并纳入脚本托管"
+    menu_item "3" "一键更新" "拉取官方最新 release"
+    menu_item "4" "配置 HTTPS" "申请证书并强制跳转 https"
+    menu_item "5" "运行管理" "状态 / 日志 / 启停 / 重启"
+    menu_item "6" "实例信息" "目录 / 版本 / 地址 / 服务状态"
+    menu_item "7" "一键卸载" "删除服务与部署文件"
     menu_item "0" "退出脚本" "结束本次操作"
     printf '\n'
 
@@ -1463,24 +1608,29 @@ menu_loop() {
         ;;
       2)
         FROM_MENU=1
-        do_update
+        do_adopt
         pause_if_interactive
         ;;
       3)
         FROM_MENU=1
-        do_https
+        do_update
         pause_if_interactive
         ;;
       4)
         FROM_MENU=1
-        menu_manage
+        do_https
         ;;
       5)
+        FROM_MENU=1
+        menu_manage
+        pause_if_interactive
+        ;;
+      6)
         FROM_MENU=1
         show_info
         pause_if_interactive
         ;;
-      6)
+      7)
         FROM_MENU=1
         do_uninstall
         pause_if_interactive
@@ -1494,6 +1644,7 @@ menu_loop() {
 case "${COMMAND}" in
   menu) menu_loop ;;
   install) do_install ;;
+  adopt) do_adopt ;;
   update) do_update ;;
   https) do_https ;;
   info|version) show_info ;;

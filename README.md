@@ -13,12 +13,32 @@ bash <(curl -fsSL https://raw.githubusercontent.com/Yufeifeio/epusdt-Install/mai
 ## 支持能力
 
 - 一键安装
+- 接管旧实例
 - 一键更新
 - 一键补 HTTPS
 - 一键卸载
 - 服务状态 / 日志 / 重启 / 停止
 - 自动输出后台账号密码
 - 自动适配常见 `nginx` 和宝塔环境
+- 安装或接管后自动设为开机自启
+
+## 接管旧实例
+
+如果别人之前已经手动部署过官方 `Epusdt`，并且还在继续使用本地 `sqlite`，现在可以直接接管到脚本里：
+
+- 不清空原有数据
+- 不重做安装流程
+- 保留原来的 `.env`
+- 保留原来的 `sqlite` 数据库
+- 自动写入 `systemd`
+- 自动设为开机自启
+- 后续可以直接使用脚本一键更新
+
+命令：
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/Yufeifeio/epusdt-Install/main/install.sh) adopt
+```
 
 ## 更新效果
 
@@ -72,6 +92,12 @@ bash <(curl -fsSL https://raw.githubusercontent.com/Yufeifeio/epusdt-Install/mai
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/Yufeifeio/epusdt-Install/main/install.sh) update
+```
+
+接管旧实例：
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/Yufeifeio/epusdt-Install/main/install.sh) adopt
 ```
 
 补 HTTPS：
