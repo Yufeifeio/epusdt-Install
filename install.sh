@@ -1290,6 +1290,25 @@ cleanup_safe_install_artifacts() {
   find "${INSTALL_DIR}" -maxdepth 1 -type f \( -name 'epusdt-*.tar.gz' -o -name 'SHA256SUMS*' \) -delete 2>/dev/null || true
 }
 
+reset_generated_static_files() {
+  validate_install_dir "${INSTALL_DIR}"
+  if [[ -d "${INSTALL_DIR}/www" ]]; then
+    rm -rf "${INSTALL_DIR}/www"
+  fi
+}
+
+repair_install_permissions() {
+  validate_install_dir "${INSTALL_DIR}"
+  [[ -d "${INSTALL_DIR}" ]] || return 0
+  mkdir -p "${INSTALL_DIR}/runtime/logs"
+  chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${INSTALL_DIR}"
+}
+
+prepare_instance_for_service_start() {
+  reset_generated_static_files
+  repair_install_permissions
+}
+
 wait_for_http() {
   local url="$1"
   local max_attempts="${2:-40}"
@@ -1573,7 +1592,7 @@ run_adopt_takeover() {
   ensure_service_account
   resolve_group
   install_packages "0"
-  chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${INSTALL_DIR}"
+  prepare_instance_for_service_start
   cleanup_safe_install_artifacts
   stop_existing_systemd_owner
   stop_existing_docker_owner
@@ -1673,6 +1692,7 @@ do_install() {
   install_release_files "${tmpdir}" "install"
   write_systemd_service
   enable_https_if_needed
+  prepare_instance_for_service_start
   systemctl restart "${SERVICE_NAME}.service"
   wait_for_app_api
 
@@ -1707,12 +1727,17 @@ do_update() {
   validate_runtime_settings
 
   [[ -x "${INSTALL_DIR}/epusdt" ]] || die "未在 ${INSTALL_DIR} 发现 epusdt"
+  ensure_service_account
+  resolve_group
 
   local installed_version
   installed_version="$(get_installed_version || true)"
   VERSION="$(normalize_version "${VERSION}")"
 
   if [[ -n "${installed_version}" && "${installed_version}" == "${VERSION}" ]]; then
+    prepare_instance_for_service_start
+    systemctl restart "${SERVICE_NAME}.service"
+    wait_for_app_api
     success "当前已是最新版: ${VERSION}"
     save_state
     [[ -n "${ACCESS_URL}" ]] && printf '访问地址: %s\n' "${ACCESS_URL}"
@@ -1720,8 +1745,6 @@ do_update() {
     return 0
   fi
 
-  ensure_service_account
-  resolve_group
   install_packages "0"
 
   local tmpdir arch
@@ -1731,6 +1754,7 @@ do_update() {
 
   download_release "${VERSION}" "${arch}" "${tmpdir}"
   update_release_files "${tmpdir}"
+  prepare_instance_for_service_start
   systemctl restart "${SERVICE_NAME}.service"
 
   if [[ -n "${PORT}" ]] && wait_for_http "http://127.0.0.1:${PORT}/admin/api/v1/auth/init-password-hash" 40; then
@@ -1753,6 +1777,9 @@ do_https() {
   [[ -x "${INSTALL_DIR}/epusdt" ]] || die "未在 ${INSTALL_DIR} 发现 epusdt，请先安装"
   service_exists || die "未找到服务 ${SERVICE_NAME}，无法配置 HTTPS，请先完成安装或修复服务"
   prepare_https_values
+  set_env_value "${INSTALL_DIR}/.env" "app_uri" "${APP_URI}"
+  set_env_value "${INSTALL_DIR}/.env" "http_listen" "${BIND_ADDR}:${PORT}"
+  prepare_instance_for_service_start
 
   if ! systemctl is-active --quiet "${SERVICE_NAME}.service"; then
     systemctl restart "${SERVICE_NAME}.service"
