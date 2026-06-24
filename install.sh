@@ -190,6 +190,7 @@ usage() {
   bash install.sh install [参数]
   bash install.sh adopt [参数]
   bash install.sh update [参数]
+  bash install.sh https [参数]
   bash install.sh doctor
   bash install.sh info
   bash install.sh uninstall [参数]
@@ -290,6 +291,25 @@ validate_service_name() {
   local value="$1"
   [[ -n "${value}" ]] || die "服务名不能为空"
   [[ "${value}" =~ ^[A-Za-z0-9_.@-]+$ ]] || die "服务名只能包含字母、数字、点、下划线、横线和 @ 符号: ${value}"
+}
+
+validate_domain() {
+  local value="$1"
+  local label="" total_length=0
+  [[ -n "${value}" ]] || return 0
+  [[ "${value}" == "${value,,}" ]] || value="${value,,}"
+  [[ "${value}" != *..* ]] || die "域名不能包含连续的点: ${value}"
+  [[ "${#value}" -le 253 ]] || die "域名长度不能超过 253 个字符: ${value}"
+  [[ "${value}" =~ ^[A-Za-z0-9.-]+$ ]] || die "域名格式不合法，不能包含空格或特殊字符: ${value}"
+  [[ "${value}" == *.* ]] || die "域名格式不合法，至少需要包含一个点: ${value}"
+
+  IFS='.' read -r -a labels <<< "${value}"
+  for label in "${labels[@]}"; do
+    [[ -n "${label}" ]] || die "域名格式不合法: ${value}"
+    [[ "${#label}" -le 63 ]] || die "域名单段长度不能超过 63 个字符: ${label}"
+    [[ "${label}" =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$ ]] || die "域名单段格式不合法: ${label}"
+    total_length=$((total_length + ${#label}))
+  done
 }
 
 validate_account_name() {
@@ -584,6 +604,7 @@ prompt_yes_no() {
 pause_if_interactive() {
   if [[ "${FROM_MENU}" -eq 1 && -t 0 ]]; then
     printf '\n'
+    local _dummy
     read -r -p "按回车继续..." _dummy
   fi
 }
@@ -1005,6 +1026,7 @@ prepare_install_values() {
     WITH_NGINX="1"
     BIND_ADDR="127.0.0.1"
     ensure_acme_email
+    validate_domain "${DOMAIN}"
     validate_domain_for_https
     APP_URI="https://${DOMAIN}"
     ACCESS_URL="${APP_URI}"
@@ -1077,6 +1099,7 @@ prepare_https_values() {
   fi
 
   [[ -n "${DOMAIN}" ]] || die "请先提供域名"
+  validate_domain "${DOMAIN}"
   ensure_acme_email
   [[ -n "${PORT}" ]] || PORT="$(find_available_port 8000)"
   resolve_group
@@ -1223,11 +1246,25 @@ validate_explicit_nginx_conf_path() {
 }
 
 nginx_reload() {
-  local nginx_bin
+  local conf_path_for_rollback="${1:-}"
+  local nginx_bin nginx_test_output backup
   nginx_bin="$(detect_nginx_binary || true)"
   [[ -n "${nginx_bin}" ]] || die "已写入 nginx 配置，但未找到 nginx 可执行文件"
 
-  "${nginx_bin}" -t
+  if ! nginx_test_output="$("${nginx_bin}" -t 2>&1)"; then
+    printf '%s\n' "${nginx_test_output}" >&2
+    if [[ -n "${conf_path_for_rollback}" ]]; then
+      backup="$(ls -t "${conf_path_for_rollback}.bak."* 2>/dev/null | head -1 || true)"
+      if [[ -n "${backup}" && -f "${backup}" ]]; then
+        cp -f "${backup}" "${conf_path_for_rollback}"
+        warn "Nginx 配置检查失败，已恢复备份: ${backup}"
+      else
+        rm -f "${conf_path_for_rollback}"
+        warn "Nginx 配置检查失败，已删除无效配置: ${conf_path_for_rollback}"
+      fi
+    fi
+    die "Nginx 配置语法检查失败，请查看上方错误"
+  fi
 
   if [[ "${nginx_bin}" == "/www/server/nginx/sbin/nginx" ]]; then
     if pgrep -x nginx >/dev/null 2>&1; then
@@ -1241,7 +1278,7 @@ nginx_reload() {
   if systemctl is-active --quiet nginx; then
     systemctl reload nginx
   else
-    systemctl start nginx
+    systemctl start nginx || die "Nginx 启动失败，请检查配置后手动执行 systemctl start nginx"
   fi
 }
 
@@ -1862,7 +1899,7 @@ $(nginx_proxy_block)
 }
 EOF
 
-  nginx_reload
+  nginx_reload "${conf_path}"
 }
 
 write_nginx_https_config() {
@@ -1911,7 +1948,7 @@ $(nginx_proxy_block)
 }
 EOF
 
-  nginx_reload
+  nginx_reload "${conf_path}"
   success "HTTPS 已启用并强制跳转"
 }
 
@@ -2330,7 +2367,7 @@ do_update() {
   installed_version="$(get_installed_version || true)"
   VERSION="$(normalize_version "${VERSION}")"
 
-  if [[ -n "${installed_version}" && "${installed_version}" == "${VERSION}" ]]; then
+  if [[ -n "${installed_version}" && "${installed_version}" == "${VERSION}" && "${VERSION_EXPLICIT}" -eq 0 ]]; then
     prepare_instance_for_service_start
     systemctl restart "${SERVICE_NAME}.service"
     ensure_service_owns_port
@@ -2475,8 +2512,17 @@ do_uninstall() {
     rm -rf "${INSTALL_DIR}"
   fi
 
-  if [[ "${remove_user}" -eq 1 && "$(id -u "${SERVICE_USER}" >/dev/null 2>&1; printf '%s' "$?")" == "0" ]]; then
-    userdel "${SERVICE_USER}" >/dev/null 2>&1 || true
+  if [[ "${remove_user}" -eq 1 ]] && id -u "${SERVICE_USER}" >/dev/null 2>&1; then
+    local other_unit_files=""
+    other_unit_files="$(grep -rl "^User=${SERVICE_USER}$" /etc/systemd/system/ 2>/dev/null \
+      | grep -vF "$(service_unit_path)" \
+      | grep -v '\.bak\.' \
+      | head -3 || true)"
+    if [[ -n "${other_unit_files}" ]]; then
+      warn "服务用户 ${SERVICE_USER} 还被其他服务使用，已跳过删除用户: ${other_unit_files}"
+    else
+      userdel "${SERVICE_USER}" >/dev/null 2>&1 || true
+    fi
   fi
 
   if [[ "${removed_nginx}" -eq 1 ]] && detect_nginx_binary >/dev/null 2>&1; then
