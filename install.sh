@@ -1170,6 +1170,131 @@ stop_existing_systemd_owner() {
   fi
 }
 
+strip_trailing_slash() {
+  local value="$1"
+  while [[ "${value}" != "/" && "${value}" == */ ]]; do
+    value="${value%/}"
+  done
+  printf '%s' "${value}"
+}
+
+supervisorctl_bin() {
+  if command_exists supervisorctl; then
+    command -v supervisorctl
+    return 0
+  fi
+  if [[ -x /www/server/panel/pyenv/bin/supervisorctl ]]; then
+    printf '%s' "/www/server/panel/pyenv/bin/supervisorctl"
+    return 0
+  fi
+  return 1
+}
+
+supervisor_config_files() {
+  local file
+  for file in /etc/supervisor/supervisord.conf /etc/supervisord.conf; do
+    [[ -f "${file}" ]] && printf '%s\n' "${file}"
+  done
+}
+
+supervisor_profile_files() {
+  local file
+  shopt -s nullglob
+  for file in \
+    /www/server/panel/plugin/supervisor/profile/*.ini \
+    /etc/supervisor/conf.d/*.conf \
+    /etc/supervisord.d/*.ini \
+    /etc/supervisord.d/*.conf; do
+    [[ -f "${file}" ]] && printf '%s\n' "${file}"
+  done
+  shopt -u nullglob
+}
+
+supervisor_profile_program_name() {
+  local file="$1"
+  sed -n 's/^[[:space:]]*\[program:\([^]]\+\)\].*/\1/p' "${file}" | head -n1
+}
+
+supervisor_profile_matches_install_dir() {
+  local file="$1"
+  local command_line profile_dir install_dir_clean profile_dir_clean
+  install_dir_clean="$(strip_trailing_slash "${INSTALL_DIR}")"
+  command_line="$(sed -n 's/^[[:space:]]*command[[:space:]]*=[[:space:]]*//p' "${file}" | head -n1)"
+  profile_dir="$(sed -n 's/^[[:space:]]*directory[[:space:]]*=[[:space:]]*//p' "${file}" | head -n1)"
+  profile_dir_clean="$(strip_trailing_slash "${profile_dir}")"
+
+  if printf '%s\n' "${command_line}" | grep -Fq "${install_dir_clean}/epusdt"; then
+    return 0
+  fi
+
+  if [[ "${profile_dir_clean}" == "${install_dir_clean}" ]] && printf '%s\n' "${command_line}" | grep -Eq '(^|[[:space:]/])epusdt([[:space:]]|$)'; then
+    return 0
+  fi
+
+  return 1
+}
+
+supervisorctl_run() {
+  local ctl="$1"
+  local conf="$2"
+  shift 2
+  if [[ -n "${conf}" ]]; then
+    "${ctl}" -c "${conf}" "$@" >/dev/null 2>&1
+  else
+    "${ctl}" "$@" >/dev/null 2>&1
+  fi
+}
+
+stop_existing_supervisor_owner() {
+  local ctl="" profile program disabled_dir disabled_file stamp conf stopped=0 programs=""
+  ctl="$(supervisorctl_bin || true)"
+  stamp="$(date +%Y%m%d%H%M%S)"
+
+  while IFS= read -r profile; do
+    [[ -n "${profile}" && -f "${profile}" ]] || continue
+    supervisor_profile_matches_install_dir "${profile}" || continue
+
+    program="$(supervisor_profile_program_name "${profile}")"
+    [[ -n "${program}" ]] || program="$(basename "${profile}")"
+    info "发现旧 Supervisor 托管 ${program}，准备停用后切换接管"
+
+    if [[ -n "${ctl}" ]]; then
+      if supervisor_config_files | grep -q .; then
+        while IFS= read -r conf; do
+          supervisorctl_run "${ctl}" "${conf}" stop "${program}:*" || supervisorctl_run "${ctl}" "${conf}" stop "${program}" || true
+        done < <(supervisor_config_files)
+      else
+        supervisorctl_run "${ctl}" "" stop "${program}:*" || supervisorctl_run "${ctl}" "" stop "${program}" || true
+      fi
+    else
+      warn "检测到旧 Supervisor 配置，但未找到 supervisorctl；脚本会停用配置文件，若端口仍占用请手动停止 Supervisor 后重试"
+    fi
+
+    disabled_dir="$(dirname "${profile}")/.epusdt-disabled-${stamp}"
+    mkdir -p "${disabled_dir}"
+    disabled_file="${disabled_dir}/$(basename "${profile}")"
+    mv "${profile}" "${disabled_file}"
+    programs="${programs} ${program}"
+    stopped=1
+  done < <(supervisor_profile_files)
+
+  [[ "${stopped}" -eq 1 ]] || return 0
+
+  if [[ -n "${ctl}" ]]; then
+    if supervisor_config_files | grep -q .; then
+      while IFS= read -r conf; do
+        supervisorctl_run "${ctl}" "${conf}" reread || true
+        supervisorctl_run "${ctl}" "${conf}" update || true
+      done < <(supervisor_config_files)
+    else
+      supervisorctl_run "${ctl}" "" reread || true
+      supervisorctl_run "${ctl}" "" update || true
+    fi
+  fi
+
+  record_adopt_action "已停用旧 Supervisor 托管$(printf '%s' "${programs}")"
+}
+
 docker_available() {
   command_exists docker
 }
@@ -1217,6 +1342,41 @@ ensure_adopt_port_released() {
     listeners="$(port_listeners "${PORT}")"
     die "接管前监听端口 ${PORT} 仍被占用。脚本未能完全接管旧启动方式，请先手动停止旧实例后再次运行 adopt。当前监听信息：${listeners}"
   fi
+}
+
+service_main_pid() {
+  systemctl show -p MainPID --value "${SERVICE_NAME}.service" 2>/dev/null || true
+}
+
+port_listener_pids() {
+  local port="$1"
+  if command_exists ss; then
+    ss -ltnp "( sport = :${port} )" 2>/dev/null | sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p' | awk '!seen[$0]++'
+  fi
+}
+
+ensure_service_owns_port() {
+  local main_pid pids pid listeners attempt=1
+  [[ -n "${PORT}" ]] || return 0
+
+  while (( attempt <= 30 )); do
+    main_pid="$(service_main_pid)"
+    if [[ -n "${main_pid}" && "${main_pid}" != "0" ]]; then
+      pids="$(port_listener_pids "${PORT}")"
+      while IFS= read -r pid; do
+        [[ -n "${pid}" ]] || continue
+        if [[ "${pid}" == "${main_pid}" ]]; then
+          return 0
+        fi
+      done <<< "${pids}"
+    fi
+    sleep 1
+    attempt=$((attempt + 1))
+  done
+
+  listeners="$(port_listeners "${PORT}")"
+  main_pid="$(service_main_pid)"
+  die "服务已启动，但端口 ${PORT} 不是由 systemd 主进程 ${main_pid:-未知} 监听。当前监听信息：${listeners:-未发现监听}"
 }
 
 install_release_files() {
@@ -1644,11 +1804,13 @@ run_adopt_takeover() {
   prepare_instance_for_service_start
   cleanup_safe_install_artifacts
   stop_existing_systemd_owner
+  stop_existing_supervisor_owner
   stop_existing_docker_owner
   stop_conflicting_instance_processes
   ensure_adopt_port_released
   write_systemd_service
   systemctl restart "${SERVICE_NAME}.service"
+  ensure_service_owns_port
   wait_for_app_api
   save_state
   print_adopt_summary

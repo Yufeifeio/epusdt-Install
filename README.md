@@ -42,11 +42,13 @@ bash <(curl -fsSL https://raw.githubusercontent.com/Yufeifeio/epusdt-Install/mai
 脚本会优先尝试识别并停止旧启动方式：
 
 - 旧 `systemd` 服务
+- 宝塔 Supervisor / supervisord 托管
 - 旧 Docker 容器
 - 旧手动守护进程
 - 常见手动启动：`epusdt http start`
 
-如果端口仍被占用，脚本会提示先手动停止旧实例，再重新运行一键入口接管。
+脚本会在接管后确认监听端口归属于新的 `systemd` 主进程。
+如果端口仍被旧进程占用，脚本会提示先手动停止旧实例，再重新运行一键入口接管。
 
 ## 🔁 更新清理
 
