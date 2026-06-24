@@ -13,7 +13,7 @@ fi
 suggest_install_dir() {
   local state_dir="${EPUSDT_INSTALL_DIR:-}"
   local cwd="${PWD}"
-  if [[ -n "${cwd}" && "${cwd}" != "/" && "${cwd}" != "/root" ]]; then
+  if [[ -n "${cwd}" && "${cwd}" != "/" && "${cwd}" != "/root" && ! "${cwd}" =~ [[:space:]] ]]; then
     printf '%s' "${cwd}"
     return 0
   fi
@@ -44,6 +44,17 @@ shift || true
 FORCE=0
 NON_INTERACTIVE=0
 FROM_MENU=0
+INSTALL_DIR_EXPLICIT=0
+SERVICE_NAME_EXPLICIT=0
+SERVICE_USER_EXPLICIT=0
+SERVICE_GROUP_EXPLICIT=0
+BIND_ADDR_EXPLICIT=0
+PORT_EXPLICIT=0
+DOMAIN_EXPLICIT=0
+APP_NAME_EXPLICIT=0
+API_RATE_URL_EXPLICIT=0
+NGINX_CONF_PATH_EXPLICIT=0
+ACME_EMAIL_EXPLICIT=0
 INSTALL_DIR="${DEFAULT_INSTALL_DIR}"
 SERVICE_NAME="${DEFAULT_SERVICE_NAME}"
 SERVICE_USER="${DEFAULT_SERVICE_USER}"
@@ -65,6 +76,7 @@ if [[ -t 1 ]]; then
   G=$'\033[0;32m'
   Y=$'\033[1;33m'
   B=$'\033[0;34m'
+  BM=$'\033[1;34m'
   C=$'\033[0;36m'
   W=$'\033[1;37m'
   NC=$'\033[0m'
@@ -73,6 +85,7 @@ else
   G=''
   Y=''
   B=''
+  BM=''
   C=''
   W=''
   NC=''
@@ -88,14 +101,42 @@ print_line() {
   printf '%s\n' "================================================================"
 }
 
-print_banner() {
+supports_utf8() {
+  local charset=""
+  charset="$(locale charmap 2>/dev/null || true)"
+  charset="${charset,,}"
+  [[ "${charset}" == "utf-8" || "${charset}" == "utf8" ]]
+}
+
+print_plain_banner() {
   printf '\n'
   printf "${B}================================================================${NC}\n"
-  printf "${W}  EPUSDT 一键部署台${NC}\n"
+  printf "${W}  EPUSDT 一键部署与运维脚本${NC}\n"
   printf "${C}  鱼肥肥 @pyufc${NC}\n"
-  printf "${C}  联系方式 : https://t.me/pyufc${NC}\n"
-  printf "${C}  发布仓库 : Yufeifeio/epusdt-Install${NC}\n"
+  printf "${C}  联系地址: https://t.me/pyufc${NC}\n"
+  printf "${C}  发布仓库: Yufeifeio/epusdt-Install${NC}\n"
   printf "${B}================================================================${NC}\n"
+  printf '\n'
+}
+
+print_banner() {
+  if ! supports_utf8; then
+    print_plain_banner
+    return 0
+  fi
+
+  printf '\n'
+  printf '%b\n' "${BM}╔══════════════════════════════════════════════════════════╗${NC}"
+  printf '%b\n' "${BM}║             🐟 EPUSDT 一键部署与运维脚本              ║${NC}"
+  printf '%b\n' "${BM}║        鱼肥肥 @pyufc   联系: https://t.me/pyufc        ║${NC}"
+  printf '%b\n' "${BM}╚══════════════════════════════════════════════════════════╝${NC}"
+  printf '%b\n' "${C}███████╗██████╗ ██╗   ██╗███████╗██████╗ ████████╗${NC}"
+  printf '%b\n' "${C}██╔════╝██╔══██╗██║   ██║██╔════╝██╔══██╗╚══██╔══╝${NC}"
+  printf '%b\n' "${C}█████╗  ██████╔╝██║   ██║███████╗██║  ██║   ██║   ${NC}"
+  printf '%b\n' "${C}██╔══╝  ██╔═══╝ ██║   ██║╚════██║██║  ██║   ██║   ${NC}"
+  printf '%b\n' "${C}███████╗██║     ╚██████╔╝███████║██████╔╝   ██║   ${NC}"
+  printf '%b\n' "${C}╚══════╝╚═╝      ╚═════╝ ╚══════╝╚═════╝    ╚═╝   ${NC}"
+  printf '%b\n' "${W}鱼肥肥 @pyufc  |  发布仓库: Yufeifeio/epusdt-Install${NC}"
   printf '\n'
 }
 
@@ -158,18 +199,18 @@ cleanup_tmpdir() {
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --install-dir) INSTALL_DIR="$2"; shift 2 ;;
-    --service-name) SERVICE_NAME="$2"; shift 2 ;;
-    --service-user) SERVICE_USER="$2"; shift 2 ;;
-    --service-group) SERVICE_GROUP="$2"; shift 2 ;;
+    --install-dir) INSTALL_DIR="$2"; INSTALL_DIR_EXPLICIT=1; shift 2 ;;
+    --service-name) SERVICE_NAME="$2"; SERVICE_NAME_EXPLICIT=1; shift 2 ;;
+    --service-user) SERVICE_USER="$2"; SERVICE_USER_EXPLICIT=1; shift 2 ;;
+    --service-group) SERVICE_GROUP="$2"; SERVICE_GROUP_EXPLICIT=1; shift 2 ;;
     --version) VERSION="$2"; shift 2 ;;
-    --domain) DOMAIN="$2"; shift 2 ;;
-    --port) PORT="$2"; shift 2 ;;
-    --bind-addr) BIND_ADDR="$2"; shift 2 ;;
-    --app-name) APP_NAME="$2"; shift 2 ;;
-    --api-rate-url) API_RATE_URL="$2"; shift 2 ;;
-    --nginx-conf-path) NGINX_CONF_PATH="$2"; shift 2 ;;
-    --acme-email) ACME_EMAIL="$2"; shift 2 ;;
+    --domain) DOMAIN="$2"; DOMAIN_EXPLICIT=1; shift 2 ;;
+    --port) PORT="$2"; PORT_EXPLICIT=1; shift 2 ;;
+    --bind-addr) BIND_ADDR="$2"; BIND_ADDR_EXPLICIT=1; shift 2 ;;
+    --app-name) APP_NAME="$2"; APP_NAME_EXPLICIT=1; shift 2 ;;
+    --api-rate-url) API_RATE_URL="$2"; API_RATE_URL_EXPLICIT=1; shift 2 ;;
+    --nginx-conf-path) NGINX_CONF_PATH="$2"; NGINX_CONF_PATH_EXPLICIT=1; shift 2 ;;
+    --acme-email) ACME_EMAIL="$2"; ACME_EMAIL_EXPLICIT=1; shift 2 ;;
     --non-interactive) NON_INTERACTIVE=1; shift ;;
     --force) FORCE=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -181,12 +222,62 @@ command_exists() {
   command -v "$1" >/dev/null 2>&1
 }
 
+validate_service_name() {
+  local value="$1"
+  [[ -n "${value}" ]] || die "服务名不能为空"
+  [[ "${value}" =~ ^[A-Za-z0-9_.@-]+$ ]] || die "服务名只能包含字母、数字、点、下划线、横线和 @ 符号: ${value}"
+}
+
+validate_account_name() {
+  local label="$1"
+  local value="$2"
+  [[ -n "${value}" ]] || die "${label}不能为空"
+  [[ "${value}" != "root" ]] || die "${label}不能使用 root"
+  [[ "${value}" =~ ^[A-Za-z0-9_.-]+$ ]] || die "${label}只能包含字母、数字、点、下划线和横线: ${value}"
+}
+
+validate_install_dir() {
+  local value="$1"
+  [[ -n "${value}" ]] || die "安装目录不能为空"
+  [[ "${value}" == /* ]] || die "安装目录必须是绝对路径: ${value}"
+  [[ "${value}" != "/" ]] || die "安装目录不能是根目录 /"
+  [[ ! "${value}" =~ [[:space:]] ]] || die "安装目录不能包含空格，请换一个不带空格的路径: ${value}"
+}
+
+validate_runtime_settings() {
+  validate_install_dir "${INSTALL_DIR}"
+  validate_service_name "${SERVICE_NAME}"
+  validate_account_name "服务用户" "${SERVICE_USER}"
+  validate_account_name "服务用户组" "${SERVICE_GROUP}"
+  [[ -n "${APP_NAME}" ]] || die "应用名称不能为空"
+}
+
 service_unit_path() {
   printf '%s' "/etc/systemd/system/${SERVICE_NAME}.service"
 }
 
 service_exists() {
   systemctl cat "${SERVICE_NAME}.service" >/dev/null 2>&1
+}
+
+has_installation_in_dir() {
+  [[ -x "${INSTALL_DIR}/epusdt" || -f "${INSTALL_DIR}/.env" || -d "${INSTALL_DIR}/runtime" ]]
+}
+
+prefer_saved_install_dir() {
+  local state_dir="${EPUSDT_INSTALL_DIR:-}"
+  if [[ "${INSTALL_DIR_EXPLICIT}" -eq 0 ]] && ! has_installation_in_dir; then
+    if [[ -n "${state_dir}" && ( -x "${state_dir}/epusdt" || -f "${state_dir}/.env" || -d "${state_dir}/runtime" ) ]]; then
+      INSTALL_DIR="${state_dir}"
+    fi
+  fi
+}
+
+ensure_existing_instance() {
+  if service_exists || has_installation_in_dir; then
+    return 0
+  fi
+  die "未识别到可管理的实例，请先执行安装，或使用 --install-dir 指定正确目录"
 }
 
 trim() {
@@ -323,12 +414,12 @@ detect_package_manager() {
 }
 
 detect_nginx_binary() {
-  if command_exists nginx; then
-    command -v nginx
-    return 0
-  fi
   if [[ -x /www/server/nginx/sbin/nginx ]]; then
     printf '%s' "/www/server/nginx/sbin/nginx"
+    return 0
+  fi
+  if command_exists nginx; then
+    command -v nginx
     return 0
   fi
   return 1
@@ -461,7 +552,9 @@ validate_domain_for_https() {
 }
 
 get_latest_version() {
-  curl -fsSL "${REPO_API_URL}" | sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1
+  local response=""
+  response="$(curl -fsSL "${REPO_API_URL}" 2>/dev/null)" || die "获取官方最新版本失败，请检查 GitHub 连通性"
+  printf '%s' "${response}" | sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1
 }
 
 normalize_version() {
@@ -486,8 +579,8 @@ download_release() {
   local sums_url="${REPO_RELEASE_BASE}/${version}/SHA256SUMS"
 
   info "开始下载 ${asset_name}"
-  curl -fsSL -o "${tmpdir}/${asset_name}" "${asset_url}"
-  curl -fsSL -o "${tmpdir}/SHA256SUMS" "${sums_url}"
+  curl -fsSL -o "${tmpdir}/${asset_name}" "${asset_url}" || die "下载失败: ${asset_url}"
+  curl -fsSL -o "${tmpdir}/SHA256SUMS" "${sums_url}" || die "下载校验文件失败: ${sums_url}"
 
   if ! grep -q " ${asset_name}$" "${tmpdir}/SHA256SUMS"; then
     die "未找到 ${asset_name} 的校验信息"
@@ -526,25 +619,41 @@ resolve_group() {
 }
 
 load_runtime_state_from_env() {
+  prefer_saved_install_dir
   local env_file="${INSTALL_DIR}/.env"
-  local uri host port_from_env
+  local uri host port_from_env bind_from_env app_name_from_env api_rate_from_env
 
   [[ -f "${env_file}" ]] || return 0
 
-  if [[ -z "${ACCESS_URL}" ]]; then
-    uri="$(sed -n 's/^app_uri=//p' "${env_file}" | tail -n1)"
-    [[ -n "${uri}" ]] && ACCESS_URL="${uri}"
-  fi
+  uri="$(sed -n 's/^app_uri=//p' "${env_file}" | tail -n1)"
+  [[ -n "${uri}" ]] && ACCESS_URL="${uri}"
 
-  if [[ -z "${PORT}" ]]; then
+  if [[ "${PORT_EXPLICIT}" -eq 0 ]]; then
     port_from_env="$(sed -n 's/^http_listen=.*:\([0-9][0-9]*\)$/\1/p' "${env_file}" | tail -n1)"
     [[ -n "${port_from_env}" ]] && PORT="${port_from_env}"
   fi
 
-  if [[ -z "${DOMAIN}" && -n "${ACCESS_URL}" ]]; then
+  if [[ "${BIND_ADDR_EXPLICIT}" -eq 0 ]]; then
+    bind_from_env="$(sed -n 's/^http_listen=\([^:]*\):[0-9][0-9]*$/\1/p' "${env_file}" | tail -n1)"
+    [[ -n "${bind_from_env}" ]] && BIND_ADDR="${bind_from_env}"
+  fi
+
+  if [[ "${APP_NAME_EXPLICIT}" -eq 0 ]]; then
+    app_name_from_env="$(sed -n 's/^app_name=//p' "${env_file}" | tail -n1)"
+    [[ -n "${app_name_from_env}" ]] && APP_NAME="${app_name_from_env}"
+  fi
+
+  if [[ "${API_RATE_URL_EXPLICIT}" -eq 0 ]]; then
+    api_rate_from_env="$(sed -n 's/^api_rate_url=//p' "${env_file}" | tail -n1)"
+    [[ -n "${api_rate_from_env}" ]] && API_RATE_URL="${api_rate_from_env}"
+  fi
+
+  if [[ "${DOMAIN_EXPLICIT}" -eq 0 && -n "${ACCESS_URL}" ]]; then
     host="$(printf '%s' "${ACCESS_URL}" | sed -n 's#^https\?://\([^/:]*\).*$#\1#p')"
     if [[ -n "${host}" && ! "${host}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
       DOMAIN="${host}"
+    else
+      DOMAIN=""
     fi
   fi
 }
@@ -571,6 +680,8 @@ prepare_install_values() {
     fi
   fi
 
+  resolve_group
+  validate_runtime_settings
   validate_port "${PORT}" || die "端口不合法: ${PORT}"
 
   if [[ -n "${DOMAIN}" ]]; then
@@ -582,7 +693,7 @@ prepare_install_values() {
     ACCESS_URL="${APP_URI}"
   else
     WITH_NGINX="0"
-    if [[ -z "${BIND_ADDR}" ]]; then
+    if [[ "${BIND_ADDR_EXPLICIT}" -eq 0 ]]; then
       BIND_ADDR="0.0.0.0"
     fi
     public_ip="$(detect_public_ip)"
@@ -592,7 +703,6 @@ prepare_install_values() {
   fi
 
   VERSION="$(normalize_version "${VERSION}")"
-  resolve_group
 }
 
 prepare_https_values() {
@@ -606,6 +716,8 @@ prepare_https_values() {
   [[ -n "${DOMAIN}" ]] || die "请先提供域名"
   [[ -n "${ACME_EMAIL}" ]] || die "请先提供证书邮箱"
   [[ -n "${PORT}" ]] || PORT="$(find_available_port 8000)"
+  resolve_group
+  validate_runtime_settings
   validate_port "${PORT}" || die "端口不合法: ${PORT}"
   BIND_ADDR="127.0.0.1"
   WITH_NGINX="1"
@@ -615,7 +727,8 @@ prepare_https_values() {
 }
 
 detect_nginx_conf_path() {
-  if [[ -n "${NGINX_CONF_PATH}" ]]; then
+  if [[ "${NGINX_CONF_PATH_EXPLICIT}" -eq 1 && -n "${NGINX_CONF_PATH}" ]]; then
+    validate_explicit_nginx_conf_path
     printf '%s' "${NGINX_CONF_PATH}"
     return 0
   fi
@@ -625,6 +738,12 @@ detect_nginx_conf_path() {
   if [[ -n "${DOMAIN}" ]]; then
     file_name="${DOMAIN}"
   fi
+
+  while IFS= read -r base_dir; do
+    [[ -d "${base_dir}" ]] || continue
+    printf '%s/%s.conf' "${base_dir}" "${file_name}"
+    return 0
+  done < <(nginx_loaded_conf_dirs)
 
   for base_dir in \
     /www/server/panel/vhost/nginx \
@@ -638,6 +757,57 @@ detect_nginx_conf_path() {
   done
 
   return 1
+}
+
+nginx_loaded_conf_dirs() {
+  local nginx_bin config_dump include_path include_dir
+  nginx_bin="$(detect_nginx_binary || true)"
+  [[ -n "${nginx_bin}" ]] || return 0
+  config_dump="$("${nginx_bin}" -T 2>/dev/null || true)"
+  [[ -n "${config_dump}" ]] || return 0
+
+  config_dump="$(printf '%s\n' "${config_dump}" | awk '
+    /^[[:space:]]*http[[:space:]]*\{/ { in_http=1; depth=1; print; next }
+    in_http {
+      opens=gsub(/\{/, "{")
+      closes=gsub(/\}/, "}")
+      depth += opens - closes
+      print
+      if (depth <= 0) {
+        in_http=0
+        depth=0
+      }
+    }
+  ')"
+  [[ -n "${config_dump}" ]] || return 0
+
+  while IFS= read -r include_path; do
+    include_path="$(printf '%s' "${include_path}" | sed 's/^[[:space:]]*include[[:space:]]\+//; s/;[[:space:]]*$//')"
+    include_dir="${include_path%/*}"
+    [[ -n "${include_dir}" && "${include_dir}" == /* ]] || continue
+    printf '%s\n' "${include_dir}"
+  done < <(printf '%s\n' "${config_dump}" | sed -n 's/^[[:space:]]*include[[:space:]].*;/&/p') | awk '!seen[$0]++'
+}
+
+validate_explicit_nginx_conf_path() {
+  local target_dir loaded_dir loaded_dirs=""
+  target_dir="$(dirname "${NGINX_CONF_PATH}")"
+
+  while IFS= read -r loaded_dir; do
+    [[ -n "${loaded_dir}" ]] || continue
+    loaded_dirs+="${loaded_dir} "
+    if [[ "${loaded_dir}" == "${target_dir}" ]]; then
+      return 0
+    fi
+  done < <(nginx_loaded_conf_dirs)
+
+  loaded_dirs="$(trim "${loaded_dirs}")"
+  if [[ -z "${loaded_dirs}" ]]; then
+    warn "未能自动识别当前 Nginx 的已加载目录，将继续使用你指定的配置路径: ${NGINX_CONF_PATH}"
+    return 0
+  fi
+
+  die "你指定的 Nginx 配置路径未被当前 Nginx 主配置加载: ${NGINX_CONF_PATH}。当前已加载目录: ${loaded_dirs}"
 }
 
 nginx_reload() {
@@ -796,7 +966,7 @@ json_status_code() {
 
 fetch_initial_admin_credentials() {
   local response status_code username password
-  response="$(curl -fsSL "http://127.0.0.1:${PORT}/admin/api/v1/auth/init-password")"
+  response="$(curl -fsSL "http://127.0.0.1:${PORT}/admin/api/v1/auth/init-password" 2>/dev/null)" || die "获取后台初始账号密码失败，请检查应用日志"
   status_code="$(json_status_code "${response}")"
   [[ "${status_code}" == "200" ]] || die "获取初始管理员密码失败：${response}"
 
@@ -816,7 +986,7 @@ verify_admin_login() {
     -H 'Content-Type: application/json' \
     -X POST \
     -d "${payload}" \
-    "http://127.0.0.1:${PORT}/admin/api/v1/auth/login")"
+    "http://127.0.0.1:${PORT}/admin/api/v1/auth/login" 2>/dev/null)" || die "后台登录验证失败，请检查应用日志"
   status_code="$(json_status_code "${response}")"
   [[ "${status_code}" == "200" ]] || die "管理员登录验证失败：${response}"
 }
@@ -911,7 +1081,8 @@ server {
 }
 
 server {
-    listen 443 ssl http2;
+    listen 443 ssl;
+    http2 on;
     server_name ${DOMAIN};
 
     ssl_certificate ${cert_fullchain};
@@ -968,6 +1139,8 @@ service_status_label() {
     printf '%s' "运行中"
   elif service_exists; then
     printf '%s' "已停止"
+  elif has_installation_in_dir; then
+    printf '%s' "目录存在，服务缺失"
   else
     printf '%s' "未安装"
   fi
@@ -990,19 +1163,21 @@ print_install_summary() {
 }
 
 show_info() {
-  local local_version="unknown"
-  local latest_version="unknown"
+  local local_version="未知"
+  local latest_version="未知"
   local current_state=""
+  local version_output=""
 
   load_runtime_state_from_env
 
   if [[ -x "${INSTALL_DIR}/epusdt" ]]; then
-    local_version="$("${INSTALL_DIR}/epusdt" version 2>/dev/null | sed -n 's/^version: //p' | head -n1 || true)"
-    [[ -n "${local_version}" ]] || local_version="unknown"
+    version_output="$("${INSTALL_DIR}/epusdt" version 2>/dev/null || true)"
+    local_version="$(printf '%s\n' "${version_output}" | sed -n 's/^version: //p' | head -n1)"
+    [[ -n "${local_version}" ]] || local_version="未知"
   fi
 
   latest_version="$(get_latest_version 2>/dev/null || true)"
-  [[ -n "${latest_version}" ]] || latest_version="unknown"
+  [[ -n "${latest_version}" ]] || latest_version="未知"
   current_state="$(service_status_label)"
 
   print_banner
@@ -1027,6 +1202,10 @@ do_install() {
 
   if [[ -f "${INSTALL_DIR}/epusdt" && "${FORCE}" -ne 1 ]]; then
     die "${INSTALL_DIR} 已存在 epusdt，请使用一键更新；如果要覆盖重装请加 --force"
+  fi
+
+  if service_exists && [[ "${FORCE}" -ne 1 ]]; then
+    die "服务 ${SERVICE_NAME} 已存在，请更换服务名，或确认后使用 --force 覆盖"
   fi
 
   if service_exists; then
@@ -1066,6 +1245,10 @@ do_update() {
   require_root
   require_systemd
   load_runtime_state_from_env
+  ensure_existing_instance
+  service_exists || die "未找到服务 ${SERVICE_NAME}，无法执行更新，请先完成安装或修复服务"
+  resolve_group
+  validate_runtime_settings
 
   [[ -x "${INSTALL_DIR}/epusdt" ]] || die "未在 ${INSTALL_DIR} 发现 epusdt"
 
@@ -1098,8 +1281,10 @@ do_update() {
 do_https() {
   require_root
   require_systemd
-
+  load_runtime_state_from_env
+  ensure_existing_instance
   [[ -x "${INSTALL_DIR}/epusdt" ]] || die "未在 ${INSTALL_DIR} 发现 epusdt，请先安装"
+  service_exists || die "未找到服务 ${SERVICE_NAME}，无法配置 HTTPS，请先完成安装或修复服务"
   prepare_https_values
 
   if ! systemctl is-active --quiet "${SERVICE_NAME}.service"; then
@@ -1117,6 +1302,9 @@ do_uninstall() {
   require_root
   require_systemd
   load_runtime_state_from_env
+  ensure_existing_instance
+  resolve_group
+  validate_runtime_settings
 
   local remove_dir=1
   local remove_https=1
@@ -1157,6 +1345,9 @@ do_uninstall() {
   systemctl daemon-reload
 
   if [[ "${remove_https}" -eq 1 ]]; then
+    if [[ "${NGINX_CONF_PATH_EXPLICIT}" -eq 0 ]]; then
+      NGINX_CONF_PATH=""
+    fi
     if [[ -z "${NGINX_CONF_PATH}" ]]; then
       NGINX_CONF_PATH="$(detect_nginx_conf_path || true)"
     fi
@@ -1187,6 +1378,8 @@ do_uninstall() {
 
 do_start() {
   require_root
+  require_systemd
+  service_exists || die "未找到服务 ${SERVICE_NAME}，请先完成安装"
   systemctl start "${SERVICE_NAME}.service"
   success "服务已启动: ${SERVICE_NAME}"
   support_info
@@ -1194,6 +1387,8 @@ do_start() {
 
 do_restart() {
   require_root
+  require_systemd
+  service_exists || die "未找到服务 ${SERVICE_NAME}，请先完成安装"
   systemctl restart "${SERVICE_NAME}.service"
   success "服务已重启: ${SERVICE_NAME}"
   support_info
@@ -1201,16 +1396,22 @@ do_restart() {
 
 do_stop() {
   require_root
+  require_systemd
+  service_exists || die "未找到服务 ${SERVICE_NAME}，请先完成安装"
   systemctl stop "${SERVICE_NAME}.service"
   success "服务已停止: ${SERVICE_NAME}"
   support_info
 }
 
 do_status() {
+  require_systemd
+  service_exists || die "未找到服务 ${SERVICE_NAME}，请先完成安装"
   systemctl status "${SERVICE_NAME}.service" --no-pager
 }
 
 do_logs() {
+  require_systemd
+  service_exists || die "未找到服务 ${SERVICE_NAME}，请先完成安装"
   journalctl -u "${SERVICE_NAME}.service" -n 200 --no-pager
 }
 
