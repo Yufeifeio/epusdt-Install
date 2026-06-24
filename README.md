@@ -10,6 +10,8 @@
 bash <(curl -fsSL https://raw.githubusercontent.com/Yufeifeio/epusdt-Install/main/install.sh)
 ```
 
+运行后按菜单选择安装、接管、更新、HTTPS、管理或卸载。
+
 ## 支持能力
 
 - 一键安装
@@ -40,13 +42,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/Yufeifeio/epusdt-Install/mai
 - 旧 Docker 容器
 - 旧手动守护进程
 
-如果端口仍被占用，脚本会明确提示你先手动停止旧实例，再重新执行 `adopt`。
-
-命令：
-
-```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/Yufeifeio/epusdt-Install/main/install.sh) adopt
-```
+如果端口仍被占用，脚本会明确提示你先手动停止旧实例，再重新运行一键命令进入菜单接管。
 
 ## 更新效果
 
@@ -81,44 +77,6 @@ bash <(curl -fsSL https://raw.githubusercontent.com/Yufeifeio/epusdt-Install/mai
 - 强制跳转 `https://`
 
 如果域名没有指向当前服务器，脚本会直接停止，不会乱改配置。
-
-## 常用命令
-
-进入菜单：
-
-```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/Yufeifeio/epusdt-Install/main/install.sh)
-```
-
-直接安装：
-
-```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/Yufeifeio/epusdt-Install/main/install.sh) install
-```
-
-直接更新：
-
-```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/Yufeifeio/epusdt-Install/main/install.sh) update
-```
-
-接管旧实例：
-
-```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/Yufeifeio/epusdt-Install/main/install.sh) adopt
-```
-
-补 HTTPS：
-
-```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/Yufeifeio/epusdt-Install/main/install.sh) https
-```
-
-卸载：
-
-```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/Yufeifeio/epusdt-Install/main/install.sh) uninstall
-```
 
 ## 联系
 
