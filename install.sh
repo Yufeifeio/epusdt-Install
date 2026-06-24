@@ -27,6 +27,10 @@ suggest_install_dir() {
       return 0
     fi
   done
+  if [[ -d /www/wwwroot ]]; then
+    printf '%s' "/www/wwwroot/epusdt"
+    return 0
+  fi
   printf '%s' "/opt/epusdt"
 }
 
@@ -968,6 +972,55 @@ nginx_loaded_conf_dirs() {
   done < <(printf '%s\n' "${config_dump}" | sed -n 's/^[[:space:]]*include[[:space:]].*;/&/p') | awk '!seen[$0]++'
 }
 
+nginx_loaded_conf_files() {
+  local nginx_bin config_dump
+  nginx_bin="$(detect_nginx_binary || true)"
+  [[ -n "${nginx_bin}" ]] || return 0
+  config_dump="$("${nginx_bin}" -T 2>/dev/null || true)"
+  [[ -n "${config_dump}" ]] || return 0
+  printf '%s\n' "${config_dump}" | sed -n 's/^# configuration file \(.*\):$/\1/p' | awk '!seen[$0]++'
+}
+
+nginx_conf_has_domain() {
+  local file="$1"
+  [[ -n "${DOMAIN}" && -f "${file}" ]] || return 1
+  awk -v domain="${DOMAIN}" '
+    /^[[:space:]]*#/ { next }
+    /^[[:space:]]*server_name[[:space:]]/ {
+      line=$0
+      sub(/^[[:space:]]*server_name[[:space:]]+/, "", line)
+      sub(/;.*/, "", line)
+      n=split(line, names, /[[:space:]]+/)
+      for (i=1; i<=n; i++) {
+        if (names[i] == domain) {
+          found=1
+        }
+      }
+    }
+    END { exit(found ? 0 : 1) }
+  ' "${file}"
+}
+
+disable_conflicting_nginx_domain_configs() {
+  local target_conf="$1"
+  local loaded_file disabled_file disabled_dir stamp
+
+  [[ -n "${DOMAIN}" ]] || return 0
+  stamp="$(date +%Y%m%d%H%M%S)"
+
+  while IFS= read -r loaded_file; do
+    [[ -n "${loaded_file}" && -f "${loaded_file}" ]] || continue
+    [[ "${loaded_file}" != "${target_conf}" ]] || continue
+    nginx_conf_has_domain "${loaded_file}" || continue
+
+    disabled_dir="$(dirname "${loaded_file}")/.epusdt-disabled-${stamp}"
+    mkdir -p "${disabled_dir}"
+    disabled_file="${disabled_dir}/$(basename "${loaded_file}")"
+    mv "${loaded_file}" "${disabled_file}"
+    warn "发现同域名 Nginx 旧配置，已停用: ${loaded_file} -> ${disabled_file}"
+  done < <(nginx_loaded_conf_files)
+}
+
 validate_explicit_nginx_conf_path() {
   local target_dir loaded_dir loaded_dirs=""
   target_dir="$(dirname "${NGINX_CONF_PATH}")"
@@ -1327,6 +1380,7 @@ write_nginx_http_config() {
 
   mkdir -p "${acme_webroot}/.well-known/acme-challenge"
   mkdir -p "$(dirname "${conf_path}")"
+  disable_conflicting_nginx_domain_configs "${conf_path}"
   backup_file_if_exists "${conf_path}"
 
   cat > "${conf_path}" <<EOF
@@ -1360,6 +1414,7 @@ write_nginx_https_config() {
   acme_webroot="/www/wwwroot/_acme/${DOMAIN}"
 
   mkdir -p "$(dirname "${conf_path}")"
+  disable_conflicting_nginx_domain_configs "${conf_path}"
   backup_file_if_exists "${conf_path}"
 
   cat > "${conf_path}" <<EOF

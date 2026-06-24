@@ -64,6 +64,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/Yufeifeio/epusdt-Install/mai
 填写域名后会自动执行：
 
 - 检查域名是否指向当前服务器
+- 自动停用同域名旧 Nginx 配置，避免证书验证命中旧站点
 - 使用 Let's Encrypt 申请 HTTPS 证书
 - 写入 Nginx 反代配置
 - 强制跳转 `https://`
