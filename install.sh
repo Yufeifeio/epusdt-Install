@@ -92,6 +92,8 @@ else
   NC=''
 fi
 
+declare -a ADOPT_ACTIONS=()
+
 info() { printf "${C}[信息]${NC} %s\n" "$1"; }
 warn() { printf "${Y}[警告]${NC} %s\n" "$1"; }
 success() { printf "${G}[完成]${NC} %s\n" "$1"; }
@@ -262,6 +264,11 @@ service_exists() {
   systemctl cat "${SERVICE_NAME}.service" >/dev/null 2>&1
 }
 
+service_exists_name() {
+  local service_name="$1"
+  systemctl cat "${service_name}.service" >/dev/null 2>&1
+}
+
 has_installation_in_dir() {
   [[ -x "${INSTALL_DIR}/epusdt" || -f "${INSTALL_DIR}/.env" || -d "${INSTALL_DIR}/runtime" ]]
 }
@@ -293,6 +300,14 @@ existing_install_complete() {
   [[ -f "${env_file}" ]] || return 1
   install_flag="$(sed -n 's/^install=//p' "${env_file}" | tail -n1 | tr '[:upper:]' '[:lower:]')"
   [[ "${install_flag}" != "true" ]]
+}
+
+record_adopt_action() {
+  ADOPT_ACTIONS+=("$1")
+}
+
+reset_adopt_actions() {
+  ADOPT_ACTIONS=()
 }
 
 trim() {
@@ -500,6 +515,15 @@ port_in_use() {
     return $?
   fi
   return 1
+}
+
+port_listeners() {
+  local port="$1"
+  if command_exists ss; then
+    ss -ltnp "( sport = :${port} )" 2>/dev/null || true
+    return 0
+  fi
+  return 0
 }
 
 find_available_port() {
@@ -942,6 +966,7 @@ stop_conflicting_instance_processes() {
   [[ -n "${pids}" ]] || return 0
 
   info "发现旧的手动运行进程，准备切换为 systemd 托管"
+  record_adopt_action "已停止旧的手动进程"
   while IFS= read -r pid; do
     [[ -n "${pid}" ]] || continue
     kill "${pid}" 2>/dev/null || true
@@ -955,6 +980,86 @@ stop_conflicting_instance_processes() {
       [[ -n "${pid}" ]] || continue
       kill -9 "${pid}" 2>/dev/null || true
     done <<< "${pids}"
+  fi
+}
+
+guess_existing_systemd_service_name() {
+  local candidate unit_path working_dir
+  shopt -s nullglob
+  for unit_path in /etc/systemd/system/*.service; do
+    working_dir="$(sed -n 's/^WorkingDirectory=//p' "${unit_path}" | head -n1)"
+    if [[ "${working_dir}" == "${INSTALL_DIR}" ]]; then
+      candidate="$(basename "${unit_path}" .service)"
+      printf '%s' "${candidate}"
+      shopt -u nullglob
+      return 0
+    fi
+  done
+  shopt -u nullglob
+  return 1
+}
+
+stop_existing_systemd_owner() {
+  local old_service=""
+  old_service="$(guess_existing_systemd_service_name || true)"
+  [[ -n "${old_service}" ]] || return 0
+
+  if [[ "${old_service}" != "${SERVICE_NAME}" ]]; then
+    info "发现旧 systemd 服务 ${old_service}，准备停用后切换接管"
+    systemctl stop "${old_service}.service" >/dev/null 2>&1 || true
+    systemctl disable "${old_service}.service" >/dev/null 2>&1 || true
+    rm -f "/etc/systemd/system/${old_service}.service"
+    systemctl daemon-reload
+    record_adopt_action "已停用旧 systemd 服务 ${old_service}"
+  fi
+}
+
+docker_available() {
+  command_exists docker
+}
+
+guess_existing_docker_container_id() {
+  local container_id inspect_text mount_source mount_target env_port
+  docker_available || return 1
+
+  while IFS= read -r container_id; do
+    [[ -n "${container_id}" ]] || continue
+    inspect_text="$(docker inspect "${container_id}" 2>/dev/null || true)"
+    [[ -n "${inspect_text}" ]] || continue
+
+    mount_source="$(printf '%s\n' "${inspect_text}" | sed -n 's/.*"Source":[[:space:]]*"\([^"]*\)".*/\1/p')"
+    mount_target="$(printf '%s\n' "${inspect_text}" | sed -n 's/.*"Destination":[[:space:]]*"\([^"]*\)".*/\1/p')"
+    env_port="$(printf '%s\n' "${inspect_text}" | sed -n 's/.*"http_listen=\([^:"]*\):\([0-9][0-9]*\)".*/\2/p' | head -n1)"
+
+    if printf '%s\n' "${mount_source}" | grep -Fxq "${INSTALL_DIR}"; then
+      printf '%s' "${container_id}"
+      return 0
+    fi
+
+    if [[ -n "${PORT}" && "${env_port}" == "${PORT}" && "${mount_target}" == *"/app"* ]]; then
+      printf '%s' "${container_id}"
+      return 0
+    fi
+  done < <(docker ps -q 2>/dev/null || true)
+
+  return 1
+}
+
+stop_existing_docker_owner() {
+  local container_id container_name
+  container_id="$(guess_existing_docker_container_id || true)"
+  [[ -n "${container_id}" ]] || return 0
+  container_name="$(docker inspect --format '{{.Name}}' "${container_id}" 2>/dev/null | sed 's#^/##' || true)"
+  info "发现旧 Docker 容器 ${container_name:-${container_id}}，准备停止后切换接管"
+  docker stop "${container_id}" >/dev/null 2>&1 || die "停止旧 Docker 容器失败，请手动停止后再接管"
+  record_adopt_action "已停止旧 Docker 容器 ${container_name:-${container_id}}"
+}
+
+ensure_adopt_port_released() {
+  if port_in_use "${PORT}"; then
+    local listeners=""
+    listeners="$(port_listeners "${PORT}")"
+    die "接管前监听端口 ${PORT} 仍被占用。脚本未能完全接管旧启动方式，请先手动停止旧实例后再次运行 adopt。当前监听信息：${listeners}"
   fi
 }
 
@@ -1266,6 +1371,7 @@ print_install_summary() {
 }
 
 print_adopt_summary() {
+  local action=""
   success "接管完成"
   printf '\n'
   printf '当前版本: %s\n' "${VERSION}"
@@ -1276,6 +1382,12 @@ print_adopt_summary() {
   [[ -n "${ACCESS_URL}" ]] && printf '访问地址: %s\n' "${ACCESS_URL}"
   printf '数据状态: 已保留原有数据库与配置\n'
   printf '后续维护: 现在可直接使用一键更新\n'
+  if (( ${#ADOPT_ACTIONS[@]} > 0 )); then
+    printf '迁移动作:\n'
+    for action in "${ADOPT_ACTIONS[@]}"; do
+      printf '%s\n' "- ${action}"
+    done
+  fi
   support_info
 }
 
@@ -1361,6 +1473,7 @@ do_install() {
 do_adopt() {
   require_root
   require_systemd
+  reset_adopt_actions
   prepare_adopt_values
 
   if service_exists && [[ -f "$(service_unit_path)" ]] && ! grep -qF "WorkingDirectory=${INSTALL_DIR}" "$(service_unit_path)"; then
@@ -1377,7 +1490,10 @@ do_adopt() {
   install_packages "0"
   chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${INSTALL_DIR}"
   cleanup_safe_install_artifacts
+  stop_existing_systemd_owner
+  stop_existing_docker_owner
   stop_conflicting_instance_processes
+  ensure_adopt_port_released
   write_systemd_service
   systemctl restart "${SERVICE_NAME}.service"
   wait_for_app_api

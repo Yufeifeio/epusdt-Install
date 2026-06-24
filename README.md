@@ -34,6 +34,14 @@ bash <(curl -fsSL https://raw.githubusercontent.com/Yufeifeio/epusdt-Install/mai
 - 自动设为开机自启
 - 后续可以直接使用脚本一键更新
 
+脚本会优先尝试识别并停止旧启动方式：
+
+- 旧 `systemd` 服务
+- 旧 Docker 容器
+- 旧手动守护进程
+
+如果端口仍被占用，脚本会明确提示你先手动停止旧实例，再重新执行 `adopt`。
+
 命令：
 
 ```bash
