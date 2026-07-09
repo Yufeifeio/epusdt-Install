@@ -942,6 +942,19 @@ ensure_service_account() {
   useradd --system --home-dir "${INSTALL_DIR}" --shell "${shell_path}" "${SERVICE_USER}"
 }
 
+chown_tree() {
+  local target="$1"
+  [[ -e "${target}" ]] || return 0
+
+  if [[ -d "${target}" ]]; then
+    find "${target}" -path '*/.user.ini' -prune -o -exec chown "${SERVICE_USER}:${SERVICE_GROUP}" {} +
+    return 0
+  fi
+
+  [[ "$(basename "${target}")" == ".user.ini" ]] && return 0
+  chown "${SERVICE_USER}:${SERVICE_GROUP}" "${target}"
+}
+
 resolve_group() {
   if getent group "${SERVICE_GROUP}" >/dev/null 2>&1; then
     return 0
@@ -1651,7 +1664,7 @@ install_release_files() {
   fi
   set_env_value "${INSTALL_DIR}/.env" "install" "false"
 
-  chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${INSTALL_DIR}"
+  chown_tree "${INSTALL_DIR}"
 }
 
 update_release_files() {
@@ -1674,7 +1687,7 @@ update_release_files() {
   rm -f "${INSTALL_DIR}/.env.example" "${INSTALL_DIR}/SHA256SUMS"
   find "${INSTALL_DIR}" -maxdepth 1 -type f \( -name 'epusdt-*.tar.gz' -o -name 'SHA256SUMS*' \) -delete 2>/dev/null || true
 
-  chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${INSTALL_DIR}"
+  chown_tree "${INSTALL_DIR}"
 }
 
 epusdt_version_output() {
@@ -1729,7 +1742,7 @@ reset_static_files_if_unsafe() {
   owner="$(detect_path_owner_user "${INSTALL_DIR}/www")"
   if [[ "${owner}" != "${SERVICE_USER}" ]]; then
     warn "检测到前端静态目录归属为 ${owner}，将修正为 ${SERVICE_USER}:${SERVICE_GROUP}"
-    chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${INSTALL_DIR}/www"
+    chown_tree "${INSTALL_DIR}/www"
   fi
 }
 
@@ -1737,7 +1750,7 @@ repair_install_permissions() {
   validate_install_dir "${INSTALL_DIR}"
   [[ -d "${INSTALL_DIR}" ]] || return 0
   mkdir -p "${INSTALL_DIR}/runtime/logs"
-  chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${INSTALL_DIR}"
+  chown_tree "${INSTALL_DIR}"
 }
 
 prepare_instance_for_service_start() {
