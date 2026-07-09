@@ -184,6 +184,9 @@ support_info() {
 
 usage() {
   cat <<'EOF'
+一键入口：
+  bash <(curl -fsSL https://raw.githubusercontent.com/Yufeifeio/epusdt-Install/main/install.sh 2>/dev/null || curl -fsSL -H 'Accept: application/vnd.github.raw' 'https://api.github.com/repos/Yufeifeio/epusdt-Install/contents/install.sh?ref=main')
+
 用法：
   bash install.sh
   bash install.sh menu

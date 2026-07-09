@@ -10,8 +10,10 @@
 ## 🚀 一键入口
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/Yufeifeio/epusdt-Install/main/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/Yufeifeio/epusdt-Install/main/install.sh 2>/dev/null || curl -fsSL -H 'Accept: application/vnd.github.raw' 'https://api.github.com/repos/Yufeifeio/epusdt-Install/contents/install.sh?ref=main')
 ```
+
+如果 GitHub raw 限流，命令会自动切换备用入口。
 
 ## 🧩 功能亮点
 
