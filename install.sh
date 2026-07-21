@@ -737,6 +737,11 @@ install_packages() {
   local pm
   pm="$(detect_package_manager)"
 
+  case "${pm}" in
+    apt) packages+=(sqlite3) ;;
+    dnf|yum) packages+=(sqlite) ;;
+  esac
+
   if [[ "${need_https}" == "1" ]]; then
     packages+=(openssl)
     if ! has_nginx_runtime; then
@@ -744,7 +749,7 @@ install_packages() {
     fi
   fi
 
-  if [[ "${#packages[@]}" -eq 3 ]]; then
+  if [[ "${need_https}" != "1" ]]; then
     info "检查基础依赖"
   fi
 
@@ -1828,17 +1833,87 @@ json_status_code() {
   printf '%s' "${json}" | sed -n 's/.*"status_code"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -n1
 }
 
+env_value() {
+  local file="$1"
+  local key="$2"
+  local value=""
+  [[ -f "${file}" ]] || return 1
+  value="$(sed -n "s/^${key}=//p" "${file}" | tail -n1)"
+  value="$(trim "${value}")"
+  value="${value%\"}"
+  value="${value#\"}"
+  value="${value%\'}"
+  value="${value#\'}"
+  printf '%s' "${value}"
+}
+
+store_db_path() {
+  local db_file=""
+  db_file="$(env_value "${INSTALL_DIR}/.env" "sqlite_database_filename" 2>/dev/null || true)"
+  if [[ -z "${db_file}" ]]; then
+    printf '%s' "${INSTALL_DIR}/epusdt.db"
+    return 0
+  fi
+  if [[ "${db_file}" == /* ]]; then
+    printf '%s' "${db_file}"
+  else
+    printf '%s/%s' "${INSTALL_DIR}" "${db_file}"
+  fi
+}
+
+sqlite_setting_value() {
+  local key="$1"
+  local db_file=""
+  command_exists sqlite3 || return 1
+  db_file="$(store_db_path)"
+  [[ -f "${db_file}" ]] || return 1
+  sqlite3 -noheader -batch "${db_file}" "select value from settings where \"key\"='${key}' order by id desc limit 1;" 2>/dev/null | head -n1
+}
+
+initial_password_from_sqlite() {
+  sqlite_setting_value "system.init_admin_password_plain"
+}
+
+initial_password_changed() {
+  local changed=""
+  changed="$(sqlite_setting_value "system.init_admin_password_changed" | tr '[:upper:]' '[:lower:]' || true)"
+  [[ "${changed}" == "true" || "${changed}" == "1" ]]
+}
+
+initial_password_from_journal() {
+  command_exists journalctl || return 1
+  journalctl -u "${SERVICE_NAME}.service" --since "-10 minutes" --no-pager -o cat 2>/dev/null |
+    sed -n 's/.*Password:[[:space:]]*\([^[:space:]║]*\).*/\1/p' |
+    tail -n1
+}
+
 fetch_initial_admin_credentials() {
   local response status_code username password
-  response="$(curl -fsSL "http://127.0.0.1:${PORT}/admin/api/v1/auth/init-password" 2>/dev/null)" || die "获取后台初始账号密码失败，请检查应用日志"
+  response="$(curl -fsSL "http://127.0.0.1:${PORT}/admin/api/v1/auth/init-password" 2>/dev/null || true)"
   status_code="$(json_status_code "${response}")"
-  [[ "${status_code}" == "200" ]] || die "获取初始管理员密码失败：${response}"
+  if [[ "${status_code}" == "200" ]]; then
+    username="$(json_field "${response}" "username")"
+    password="$(json_field "${response}" "password")"
+    [[ -n "${username}" && -n "${password}" ]] || die "初始管理员账号信息解析失败：${response}"
+    printf '%s\n%s\n' "${username}" "${password}"
+    return 0
+  fi
 
-  username="$(json_field "${response}" "username")"
-  password="$(json_field "${response}" "password")"
-  [[ -n "${username}" && -n "${password}" ]] || die "初始管理员账号信息解析失败：${response}"
+  username="admin"
+  password="$(initial_password_from_sqlite || true)"
+  if [[ -z "${password}" ]]; then
+    password="$(initial_password_from_journal || true)"
+  fi
+  if [[ -n "${password}" ]]; then
+    printf '%s\n%s\n' "${username}" "${password}"
+    return 0
+  fi
 
-  printf '%s\n%s\n' "${username}" "${password}"
+  if initial_password_changed; then
+    die "后台初始密码已被修改，无法恢复明文；请使用已设置的后台密码登录"
+  fi
+
+  die "获取后台初始账号密码失败，未在本地数据库或服务日志找到初始化密码"
 }
 
 verify_admin_login() {
