@@ -197,6 +197,8 @@ usage() {
   bash install.sh doctor
   bash install.sh info
   bash install.sh uninstall [参数]
+  bash install.sh password
+  bash install.sh reset-password
   bash install.sh start
   bash install.sh restart
   bash install.sh stop
@@ -766,6 +768,40 @@ install_packages() {
       yum install -y "${packages[@]}"
       ;;
   esac
+}
+
+install_tool_package() {
+  local apt_pkg="$1"
+  local rpm_pkg="$2"
+  local pm
+  pm="$(detect_package_manager)"
+  case "${pm}" in
+    apt)
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update -y
+      apt-get install -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "${apt_pkg}"
+      ;;
+    dnf)
+      dnf install -y "${rpm_pkg}"
+      ;;
+    yum)
+      yum install -y "${rpm_pkg}"
+      ;;
+  esac
+}
+
+ensure_sqlite3_cli() {
+  command_exists sqlite3 && return 0
+  info "安装 SQLite 工具"
+  install_tool_package "sqlite3" "sqlite"
+  command_exists sqlite3 || die "未找到 sqlite3，无法读取本地数据库"
+}
+
+ensure_htpasswd_cli() {
+  command_exists htpasswd && return 0
+  info "安装密码工具"
+  install_tool_package "apache2-utils" "httpd-tools"
+  command_exists htpasswd || die "未找到 htpasswd，无法生成后台密码哈希"
 }
 
 port_in_use() {
@@ -1867,7 +1903,7 @@ sqlite_setting_value() {
   command_exists sqlite3 || return 1
   db_file="$(store_db_path)"
   [[ -f "${db_file}" ]] || return 1
-  sqlite3 -noheader -batch "${db_file}" "select value from settings where \"key\"='${key}' order by id desc limit 1;" 2>/dev/null | head -n1
+  sqlite3 -noheader -batch "${db_file}" "select value from settings where \"key\"='${key}' and deleted_at is null order by id desc limit 1;" 2>/dev/null | head -n1
 }
 
 initial_password_from_sqlite() {
@@ -1928,6 +1964,58 @@ verify_admin_login() {
     "http://127.0.0.1:${PORT}/admin/api/v1/auth/login" 2>/dev/null)" || die "后台登录验证失败，请检查应用日志"
   status_code="$(json_status_code "${response}")"
   [[ "${status_code}" == "200" ]] || die "管理员登录验证失败：${response}"
+}
+
+generate_admin_password() {
+  if command_exists openssl; then
+    openssl rand -hex 16
+    return 0
+  fi
+  od -An -N16 -tx1 /dev/urandom | tr -d ' \n'
+  printf '\n'
+}
+
+bcrypt_password_hash() {
+  local password="$1"
+  ensure_htpasswd_cli
+  htpasswd -bnBC 10 epusdt "${password}" 2>/dev/null |
+    sed 's/^[^:]*://; s/^\$2y\$/\$2a\$/' |
+    tr -d '\r\n'
+}
+
+reset_admin_password_in_db() {
+  local password="$1"
+  local hash="$2"
+  local db_file=""
+
+  ensure_sqlite3_cli
+  db_file="$(store_db_path)"
+  [[ -f "${db_file}" ]] || die "未找到数据库文件: ${db_file}"
+
+  sqlite3 -batch "${db_file}" <<SQL
+BEGIN;
+UPDATE admin_users
+SET password_hash='${hash}', status=1, updated_at=datetime('now'), deleted_at=NULL
+WHERE username='admin';
+INSERT INTO admin_users (username, password_hash, status, created_at, updated_at)
+SELECT 'admin', '${hash}', 1, datetime('now'), datetime('now')
+WHERE changes()=0;
+DELETE FROM settings
+WHERE "key"='system.init_admin_password_plain';
+UPDATE settings
+SET value='true', type='bool', description='Whether initial admin password plaintext has been cleared', updated_at=datetime('now'), deleted_at=NULL
+WHERE "key"='system.init_admin_password_fetched';
+INSERT INTO settings ("group", "key", value, type, description, created_at, updated_at)
+SELECT 'system', 'system.init_admin_password_fetched', 'true', 'bool', 'Whether initial admin password plaintext has been cleared', datetime('now'), datetime('now')
+WHERE changes()=0;
+UPDATE settings
+SET value='true', type='bool', description='Whether initial admin password has been changed', updated_at=datetime('now'), deleted_at=NULL
+WHERE "key"='system.init_admin_password_changed';
+INSERT INTO settings ("group", "key", value, type, description, created_at, updated_at)
+SELECT 'system', 'system.init_admin_password_changed', 'true', 'bool', 'Whether initial admin password has been changed', datetime('now'), datetime('now')
+WHERE changes()=0;
+COMMIT;
+SQL
 }
 
 acme_sh_path() {
@@ -2679,6 +2767,65 @@ do_logs() {
   journalctl -u "${SERVICE_NAME}.service" -n 200 --no-pager || true
 }
 
+print_admin_credentials() {
+  local password="$1"
+  printf '后台账号: admin\n'
+  printf '后台密码: %s\n' "${password}"
+  [[ -n "${ACCESS_URL}" ]] && printf '访问地址: %s\n' "${ACCESS_URL}"
+  support_info
+}
+
+do_password() {
+  require_root
+  require_systemd
+  load_runtime_state_from_env
+  ensure_existing_instance
+  ensure_service_directory_matches
+  ensure_sqlite3_cli
+
+  local password="" new_password="" hash="" should_reset=0
+  password="$(initial_password_from_sqlite || true)"
+  if [[ -z "${password}" ]]; then
+    password="$(initial_password_from_journal || true)"
+  fi
+
+  if [[ -n "${password}" && "${COMMAND}" != "reset-password" ]]; then
+    print_admin_credentials "${password}"
+    return 0
+  fi
+
+  if [[ "${COMMAND}" == "reset-password" ]]; then
+    should_reset=1
+  elif [[ "${NON_INTERACTIVE}" -eq 0 ]]; then
+    if initial_password_changed; then
+      warn "初始密码已被修改，无法查看明文"
+    else
+      warn "未找到可查看的初始密码"
+    fi
+    prompt_yes_no "重置后台密码" 1 && should_reset=1 || should_reset=0
+  else
+    die "未找到可查看的后台初始密码；如需重置请执行 reset-password --force"
+  fi
+
+  [[ "${should_reset}" -eq 1 ]] || return 0
+  if [[ "${NON_INTERACTIVE}" -ne 0 && "${FORCE}" -ne 1 ]]; then
+    die "非交互重置后台密码请加 --force"
+  fi
+
+  new_password="$(generate_admin_password)"
+  hash="$(bcrypt_password_hash "${new_password}")"
+  [[ -n "${hash}" ]] || die "生成后台密码哈希失败"
+  reset_admin_password_in_db "${new_password}" "${hash}"
+
+  if service_exists && systemctl is-active --quiet "${SERVICE_NAME}.service"; then
+    wait_for_app_api
+    verify_admin_login "admin" "${new_password}"
+  fi
+
+  success "后台密码已重置"
+  print_admin_credentials "${new_password}"
+}
+
 menu_manage() {
   while true; do
     print_banner
@@ -2688,11 +2835,12 @@ menu_manage() {
     menu_item "4" "重启服务" "重启当前实例"
     menu_item "5" "停止服务" "停止当前实例"
     menu_item "6" "补配 HTTPS" "首次部署未填域名时使用"
+    menu_item "7" "后台密码" "查看或重置后台密码"
     menu_item "0" "返回上级" "返回主菜单"
     printf '\n'
 
     local mgmt=""
-    mgmt="$(prompt_menu_choice "请选择编号" "0 1 2 3 4 5 6")"
+    mgmt="$(prompt_menu_choice "请选择编号" "0 1 2 3 4 5 6 7")"
     case "${mgmt}" in
       1) do_status ;;
       2) do_logs ;;
@@ -2700,6 +2848,7 @@ menu_manage() {
       4) do_restart ;;
       5) do_stop ;;
       6) do_https ;;
+      7) do_password ;;
       0) return 0 ;;
       *) warn "无效选项" ;;
     esac
@@ -2713,7 +2862,7 @@ menu_loop() {
     menu_item "1" "开始部署" "填域名自动 HTTPS，回显账号密码"
     menu_item "2" "接管旧实例" "保留原数据并纳入脚本托管"
     menu_item "3" "一键更新" "拉取官方最新版本"
-    menu_item "4" "运行管理" "状态 / 日志 / 启停 / 补配 HTTPS"
+    menu_item "4" "运行管理" "状态 / 日志 / 密码 / HTTPS"
     menu_item "5" "实例信息" "目录 / 版本 / 地址 / 服务状态"
     menu_item "6" "一键自检" "服务 / 端口 / HTTPS / 解析"
     menu_item "7" "一键卸载" "删除服务与部署文件"
@@ -2773,6 +2922,8 @@ case "${COMMAND}" in
   doctor|check) do_doctor || exit $? ;;
   info|version) show_info ;;
   uninstall) do_uninstall ;;
+  password) do_password ;;
+  reset-password) do_password ;;
   start) do_start ;;
   restart) do_restart ;;
   stop) do_stop ;;
