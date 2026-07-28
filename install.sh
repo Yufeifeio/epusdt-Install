@@ -942,6 +942,40 @@ get_installed_version() {
   printf '%s' "${version}"
 }
 
+version_major() {
+  local version="$1"
+  version="${version#v}"
+  if [[ "${version}" =~ ^([0-9]+)\. ]]; then
+    printf '%s' "${BASH_REMATCH[1]}"
+    return 0
+  fi
+  return 1
+}
+
+confirm_major_upgrade() {
+  local installed="$1"
+  local target="$2"
+  local installed_major target_major
+
+  [[ -n "${installed}" && -n "${target}" ]] || return 0
+  installed_major="$(version_major "${installed}" || true)"
+  target_major="$(version_major "${target}" || true)"
+  [[ -n "${installed_major}" && -n "${target_major}" ]] || return 0
+  (( target_major > installed_major )) || return 0
+
+  warn "检测到主版本升级: ${installed} -> ${target}"
+  warn "v2.0.0 起 GMPay 签名从 MD5 改为 HMAC-SHA256；仍使用旧 GMPay MD5 的商户会返回 401"
+  warn "EPay 兼容接口不受影响，仍继续使用 MD5"
+
+  if [[ "${FORCE}" -eq 1 ]]; then
+    return 0
+  fi
+  if [[ "${NON_INTERACTIVE}" -ne 0 ]]; then
+    die "主版本升级需要确认；非交互执行请确认业务已兼容后加 --force"
+  fi
+  prompt_yes_no "确认继续升级到 ${target}" 0 || die "已取消主版本升级"
+}
+
 download_release() {
   local version="$1"
   local arch="$2"
@@ -2545,6 +2579,7 @@ do_update() {
   local installed_version
   installed_version="$(get_installed_version || true)"
   VERSION="$(normalize_version "${VERSION}")"
+  confirm_major_upgrade "${installed_version}" "${VERSION}"
 
   if [[ -n "${installed_version}" && "${installed_version}" == "${VERSION}" && "${VERSION_EXPLICIT}" -eq 0 ]]; then
     prepare_instance_for_service_start
