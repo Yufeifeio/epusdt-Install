@@ -40,11 +40,11 @@ bash <(curl -fsSL https://raw.githubusercontent.com/Yufeifeio/epusdt-Install/mai
 
 不要使用 `/www/wwwroot`、`/opt`、`/var/www` 这类系统目录或站点根目录，避免覆盖或误删其他站点数据。
 
-## ⚠️ v2.0.0 升级提醒
+## ⚠️ 主版本升级提醒
 
 官方 `v2.0.0` 起，`GMPay` 签名从 `MD5` 改为 `HMAC-SHA256`。仍使用旧 `GMPay MD5` 的商户需要先改造签名，否则会返回 `401`。
 
-`EPay` 兼容接口不受影响，仍继续使用 `MD5`。脚本检测到 `v1.x -> v2.x` 主版本升级时会要求确认，非交互执行需加 `--force`。
+`EPay` 兼容接口不受影响，仍继续使用 `MD5`。脚本检测到主版本升级时会要求确认，非交互执行需加 `--force`。
 
 ## 🧲 接管旧实例
 

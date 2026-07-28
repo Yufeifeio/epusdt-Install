@@ -964,8 +964,8 @@ confirm_major_upgrade() {
   (( target_major > installed_major )) || return 0
 
   warn "检测到主版本升级: ${installed} -> ${target}"
-  warn "v2.0.0 起 GMPay 签名从 MD5 改为 HMAC-SHA256；仍使用旧 GMPay MD5 的商户会返回 401"
-  warn "EPay 兼容接口不受影响，仍继续使用 MD5"
+  warn "主版本升级可能包含不兼容变更，请先确认商户对接方式已兼容目标版本"
+  warn "例如 v2.0.0 起 GMPay 签名从 MD5 改为 HMAC-SHA256；EPay 兼容接口不受影响"
 
   if [[ "${FORCE}" -eq 1 ]]; then
     return 0
