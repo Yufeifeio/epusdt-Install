@@ -1030,6 +1030,24 @@ chown_tree() {
   chown "${SERVICE_USER}:${SERVICE_GROUP}" "${target}"
 }
 
+chown_self() {
+  local target="$1"
+  [[ -e "${target}" ]] || return 0
+  [[ "$(basename "${target}")" == ".user.ini" ]] && return 0
+  chown "${SERVICE_USER}:${SERVICE_GROUP}" "${target}"
+}
+
+chown_glob_matches() {
+  local pattern="$1"
+  local path
+
+  while IFS= read -r -d '' path; do
+    chown_self "${path}"
+  done < <(find "${INSTALL_DIR}" -maxdepth 1 -type f -name "${pattern}" -print0 2>/dev/null)
+
+  return 0
+}
+
 resolve_group() {
   if getent group "${SERVICE_GROUP}" >/dev/null 2>&1; then
     return 0
@@ -1739,7 +1757,7 @@ install_release_files() {
   fi
   set_env_value "${INSTALL_DIR}/.env" "install" "false"
 
-  chown_tree "${INSTALL_DIR}"
+  repair_install_permissions
 }
 
 update_release_files() {
@@ -1762,7 +1780,7 @@ update_release_files() {
   rm -f "${INSTALL_DIR}/.env.example" "${INSTALL_DIR}/SHA256SUMS"
   find "${INSTALL_DIR}" -maxdepth 1 -type f \( -name 'epusdt-*.tar.gz' -o -name 'SHA256SUMS*' \) -delete 2>/dev/null || true
 
-  chown_tree "${INSTALL_DIR}"
+  repair_install_permissions
 }
 
 epusdt_version_output() {
@@ -1825,7 +1843,13 @@ repair_install_permissions() {
   validate_install_dir "${INSTALL_DIR}"
   [[ -d "${INSTALL_DIR}" ]] || return 0
   mkdir -p "${INSTALL_DIR}/runtime/logs"
-  chown_tree "${INSTALL_DIR}"
+  chown_self "${INSTALL_DIR}"
+  chown_self "${INSTALL_DIR}/epusdt"
+  chown_self "${INSTALL_DIR}/.env"
+  chown_self "${INSTALL_DIR}/.env.upstream.example"
+  chown_tree "${INSTALL_DIR}/runtime"
+  chown_tree "${INSTALL_DIR}/www"
+  chown_glob_matches "*.db*"
 }
 
 prepare_instance_for_service_start() {
@@ -2280,6 +2304,7 @@ run_adopt_takeover() {
   systemctl restart "${SERVICE_NAME}.service"
   ensure_service_owns_port
   wait_for_app_api
+  repair_install_permissions
   save_state
   print_adopt_summary
 }
@@ -2539,6 +2564,7 @@ do_install() {
   systemctl restart "${SERVICE_NAME}.service"
   ensure_service_owns_port
   wait_for_app_api
+  repair_install_permissions
 
   admin_info="$(fetch_initial_admin_credentials)"
   admin_user="$(printf '%s' "${admin_info}" | sed -n '1p')"
@@ -2586,6 +2612,7 @@ do_update() {
     systemctl restart "${SERVICE_NAME}.service"
     ensure_service_owns_port
     wait_for_app_api
+    repair_install_permissions
     success "当前已是最新版: ${VERSION}"
     save_state
     [[ -n "${ACCESS_URL}" ]] && printf '访问地址: %s\n' "${ACCESS_URL}"
@@ -2611,6 +2638,7 @@ do_update() {
   else
     warn "服务已重启，但接口健康检查未通过"
   fi
+  repair_install_permissions
 
   save_state
   printf '已清理: 旧版前端目录、上游示例环境文件、校验文件、遗留安装包\n'
@@ -2629,12 +2657,14 @@ do_https() {
   prepare_https_values
   set_env_value "${INSTALL_DIR}/.env" "app_uri" "${APP_URI}"
   set_env_value "${INSTALL_DIR}/.env" "http_listen" "${BIND_ADDR}:${PORT}"
+  resolve_group
   prepare_instance_for_service_start
 
   systemctl restart "${SERVICE_NAME}.service"
 
   ensure_service_owns_port
   wait_for_app_api
+  repair_install_permissions
   enable_https_if_needed
   save_state
   printf '访问地址: %s\n' "${ACCESS_URL}"
@@ -2754,9 +2784,12 @@ do_start() {
   load_runtime_state_from_env
   service_exists || die "未找到服务 ${SERVICE_NAME}，请先完成安装"
   ensure_service_directory_matches
+  resolve_group
+  prepare_instance_for_service_start
   systemctl start "${SERVICE_NAME}.service"
   ensure_service_owns_port
   wait_for_app_api
+  repair_install_permissions
   success "服务已启动: ${SERVICE_NAME}"
   support_info
 }
@@ -2767,9 +2800,12 @@ do_restart() {
   load_runtime_state_from_env
   service_exists || die "未找到服务 ${SERVICE_NAME}，请先完成安装"
   ensure_service_directory_matches
+  resolve_group
+  prepare_instance_for_service_start
   systemctl restart "${SERVICE_NAME}.service"
   ensure_service_owns_port
   wait_for_app_api
+  repair_install_permissions
   success "服务已重启: ${SERVICE_NAME}"
   support_info
 }
