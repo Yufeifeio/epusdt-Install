@@ -10,7 +10,7 @@
 ## 🚀 一键入口
 
 ```bash
-curl -fsSL https://github.com/Yufeifeio/epusdt-Install/raw/main/install.sh | bash
+bash <(curl -fsSL https://github.com/Yufeifeio/epusdt-Install/raw/main/install.sh)
 ```
 
 ## 🧩 功能亮点
