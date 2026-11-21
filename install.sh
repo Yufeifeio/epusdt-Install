@@ -109,6 +109,9 @@ else
 fi
 
 declare -a ADOPT_ACTIONS=()
+UPDATE_BACKUP_DIR=""
+UPDATE_ROLLBACK_PENDING=0
+UPDATE_TMPDIR=""
 
 info() { printf "${C}[信息]${NC} %s\n" "$1"; }
 warn() { printf "${Y}[警告]${NC} %s\n" "$1" >&2; }
@@ -736,7 +739,26 @@ has_nginx_runtime() {
 install_packages() {
   local need_https="${1:-0}"
   local packages=(curl tar ca-certificates)
-  local pm
+  local pm missing=0 required
+
+  for required in curl tar sqlite3; do
+    command_exists "${required}" || missing=1
+  done
+  if [[ ! -s /etc/ssl/certs/ca-certificates.crt && ! -s /etc/pki/tls/certs/ca-bundle.crt ]]; then
+    missing=1
+  fi
+  if [[ "${need_https}" == "1" ]]; then
+    command_exists openssl || missing=1
+    if ! has_nginx_runtime; then
+      missing=1
+    fi
+  fi
+
+  if (( missing == 0 )); then
+    info "所需依赖均已安装"
+    return 0
+  fi
+
   pm="$(detect_package_manager)"
 
   case "${pm}" in
@@ -804,20 +826,34 @@ ensure_htpasswd_cli() {
   command_exists htpasswd || die "未找到 htpasswd，无法生成后台密码哈希"
 }
 
+proc_listening_inodes() {
+  local port="$1" port_hex
+  printf -v port_hex '%04X' "$((10#${port}))"
+  awk -v suffix=":${port_hex}" 'tolower($2) ~ (tolower(suffix) "$" ) && $4 == "0A" {print $10}' \
+    /proc/net/tcp /proc/net/tcp6 2>/dev/null | sort -u
+}
+
 port_in_use() {
-  local port="$1"
+  local port="$1" listeners
   if command_exists ss; then
-    ss -ltnH "( sport = :${port} )" 2>/dev/null | grep -q .
-    return $?
+    listeners="$(ss -ltnH "( sport = :${port} )" 2>/dev/null || true)"
+    [[ -n "${listeners}" ]] && return 0
   fi
-  return 1
+  [[ -n "$(proc_listening_inodes "${port}")" ]]
 }
 
 port_listeners() {
-  local port="$1"
+  local port="$1" listeners inodes
   if command_exists ss; then
-    ss -ltnp "( sport = :${port} )" 2>/dev/null || true
-    return 0
+    listeners="$(ss -ltnp "( sport = :${port} )" 2>/dev/null || true)"
+    if [[ -n "${listeners}" ]]; then
+      printf '%s\n' "${listeners}"
+      return 0
+    fi
+  fi
+  inodes="$(proc_listening_inodes "${port}")"
+  if [[ -n "${inodes}" ]]; then
+    printf 'TCP 端口 %s 正在监听，socket inode: %s\n' "${port}" "${inodes}"
   fi
   return 0
 }
@@ -825,14 +861,16 @@ port_listeners() {
 find_available_port() {
   local port="${1:-8000}"
   while port_in_use "${port}"; do
-    port=$((port + 1))
+    port=$((10#${port} + 1))
   done
   printf '%s' "${port}"
 }
 
 validate_port() {
+  local port
   [[ "$1" =~ ^[0-9]+$ ]] || return 1
-  (( "$1" >= 1 && "$1" <= 65535 ))
+  port=$((10#$1))
+  (( port >= 1 && port <= 65535 ))
 }
 
 detect_local_ip() {
@@ -940,6 +978,22 @@ get_installed_version() {
     version="v${version}"
   fi
   printf '%s' "${version}"
+}
+
+validate_update_database_config() {
+  local db_type key value
+  db_type="$(env_value "${INSTALL_DIR}/.env" "db_type" 2>/dev/null || true)"
+  db_type="${db_type,,}"
+  if [[ -n "${db_type}" && "${db_type}" != "sqlite" ]]; then
+    die "当前配置 db_type=${db_type}，官方 v2.1.1 仅支持 SQLite；已在替换程序前停止更新"
+  fi
+
+  for key in mysql_database mysql_host postgres_database postgres_host; do
+    value="$(env_value "${INSTALL_DIR}/.env" "${key}" 2>/dev/null || true)"
+    if [[ -n "${value}" ]]; then
+      die "当前配置仍包含 ${key}，官方 v2.1.1 仅支持 SQLite；已在替换程序前停止更新"
+    fi
+  done
 }
 
 version_major() {
@@ -1676,10 +1730,37 @@ service_main_pid() {
 }
 
 port_listener_pids() {
-  local port="$1"
+  local port="$1" listeners pids
   if command_exists ss; then
-    ss -ltnp "( sport = :${port} )" 2>/dev/null | sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p' | awk '!seen[$0]++'
+    listeners="$(ss -ltnp "( sport = :${port} )" 2>/dev/null || true)"
+    pids="$(printf '%s\n' "${listeners}" | sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p' | awk '!seen[$0]++')"
+    if [[ -n "${pids}" ]]; then
+      printf '%s\n' "${pids}"
+      return 0
+    fi
   fi
+
+  if command_exists lsof; then
+    pids="$(lsof -nP -t -iTCP:"${port}" -sTCP:LISTEN 2>/dev/null | awk '!seen[$0]++' || true)"
+    if [[ -n "${pids}" ]]; then
+      printf '%s\n' "${pids}"
+      return 0
+    fi
+  fi
+}
+
+process_owns_listening_port() {
+  local pid="$1" port="$2" inodes inode proc_fd socket_target
+  inodes="$(proc_listening_inodes "${port}")"
+  [[ -n "${inodes}" ]] || return 1
+  for proc_fd in /proc/"${pid}"/fd/*; do
+    [[ -e "${proc_fd}" ]] || continue
+    socket_target="$(readlink "${proc_fd}" 2>/dev/null || true)"
+    for inode in ${inodes}; do
+      [[ "${socket_target}" == "socket:[${inode}]" ]] && return 0
+    done
+  done
+  return 1
 }
 
 service_port_owner_matches() {
@@ -1687,6 +1768,12 @@ service_port_owner_matches() {
   [[ -n "${PORT}" ]] || return 0
   main_pid="$(service_main_pid)"
   [[ -n "${main_pid}" && "${main_pid}" != "0" ]] || return 1
+  if process_owns_listening_port "${main_pid}" "${PORT}"; then
+    return 0
+  fi
+  if ! command_exists ss && ! command_exists lsof; then
+    return 1
+  fi
   pids="$(port_listener_pids "${PORT}")"
   while IFS= read -r pid; do
     [[ -n "${pid}" ]] || continue
@@ -1696,7 +1783,7 @@ service_port_owner_matches() {
 }
 
 ensure_service_owns_port() {
-  local main_pid pids pid listeners attempt=1
+  local main_pid listeners attempt=1
   [[ -n "${PORT}" ]] || return 0
 
   while (( attempt <= 30 )); do
@@ -1771,6 +1858,9 @@ update_release_files() {
   mkdir -p "${old_dir}"
   [[ -f "${INSTALL_DIR}/epusdt" ]] && cp -f "${INSTALL_DIR}/epusdt" "${old_dir}/epusdt"
   [[ -d "${INSTALL_DIR}/www" ]] && cp -a "${INSTALL_DIR}/www" "${old_dir}/www"
+  [[ -f "${INSTALL_DIR}/.env.upstream.example" ]] && cp -f "${INSTALL_DIR}/.env.upstream.example" "${old_dir}/.env.upstream.example"
+  UPDATE_BACKUP_DIR="${old_dir}"
+  UPDATE_ROLLBACK_PENDING=1
 
   install -m 755 "${tmpdir}/epusdt" "${INSTALL_DIR}/epusdt"
   install -m 644 "${tmpdir}/.env.example" "${INSTALL_DIR}/.env.upstream.example"
@@ -1781,6 +1871,57 @@ update_release_files() {
   find "${INSTALL_DIR}" -maxdepth 1 -type f \( -name 'epusdt-*.tar.gz' -o -name 'SHA256SUMS*' \) -delete 2>/dev/null || true
 
   repair_install_permissions
+}
+
+restore_update_backup() {
+  local backup_dir="$1"
+
+  if [[ ! -f "${backup_dir}/epusdt" ]]; then
+    warn "更新失败，但未找到可恢复的旧程序: ${backup_dir}"
+    return 1
+  fi
+  if ! install -m 755 "${backup_dir}/epusdt" "${INSTALL_DIR}/epusdt"; then
+    warn "更新失败，恢复旧程序文件失败: ${INSTALL_DIR}/epusdt"
+    return 1
+  fi
+
+  rm -rf "${INSTALL_DIR}/www" || return 1
+  if [[ -d "${backup_dir}/www" ]]; then
+    cp -a "${backup_dir}/www" "${INSTALL_DIR}/www" || return 1
+  fi
+  if [[ -f "${backup_dir}/.env.upstream.example" ]]; then
+    cp -f "${backup_dir}/.env.upstream.example" "${INSTALL_DIR}/.env.upstream.example" || return 1
+  else
+    rm -f "${INSTALL_DIR}/.env.upstream.example" || return 1
+  fi
+
+  repair_install_permissions || return 1
+  if ! systemctl restart "${SERVICE_NAME}.service"; then
+    warn "旧程序文件已恢复，但服务重启失败，请检查 systemd 日志"
+    return 1
+  fi
+  if [[ -n "${PORT}" ]] && ! wait_for_http "http://127.0.0.1:${PORT}/admin/api/v1/auth/init-password-hash" 80; then
+    warn "旧程序文件已恢复，但接口仍未就绪，请检查 systemd 日志"
+    return 1
+  fi
+  if [[ -n "${PORT}" ]] && ! service_port_owner_matches; then
+    warn "旧程序文件已恢复，但监听端口不属于当前 systemd 服务，请检查旧实例是否仍在运行"
+    return 1
+  fi
+
+  warn "更新失败，已恢复更新前的程序和静态文件"
+}
+
+on_update_exit() {
+  local status="$1"
+  trap - EXIT
+
+  if [[ "${UPDATE_ROLLBACK_PENDING}" -eq 1 ]]; then
+    UPDATE_ROLLBACK_PENDING=0
+    restore_update_backup "${UPDATE_BACKUP_DIR}" || warn "自动恢复未完成，请从 ${UPDATE_BACKUP_DIR} 手动恢复程序文件"
+  fi
+  [[ -n "${UPDATE_TMPDIR}" ]] && cleanup_tmpdir "${UPDATE_TMPDIR}"
+  exit "${status}"
 }
 
 epusdt_version_output() {
@@ -2598,6 +2739,7 @@ do_update() {
   validate_runtime_settings
 
   [[ -x "${INSTALL_DIR}/epusdt" ]] || die "未在 ${INSTALL_DIR} 发现 epusdt"
+  validate_update_database_config
   ensure_service_account
   resolve_group
   prepare_instance_for_service_start
@@ -2625,7 +2767,10 @@ do_update() {
   local tmpdir arch
   tmpdir="$(mktemp -d)"
   arch="$(detect_arch)"
-  trap "cleanup_tmpdir '${tmpdir}'" EXIT
+  UPDATE_BACKUP_DIR=""
+  UPDATE_ROLLBACK_PENDING=0
+  UPDATE_TMPDIR="${tmpdir}"
+  trap 'on_update_exit "$?"' EXIT
 
   download_release "${VERSION}" "${arch}" "${tmpdir}"
   update_release_files "${tmpdir}"
@@ -2636,9 +2781,10 @@ do_update() {
   if [[ -n "${PORT}" ]] && wait_for_http "http://127.0.0.1:${PORT}/admin/api/v1/auth/init-password-hash" 40; then
     success "已更新到 ${VERSION}"
   else
-    warn "服务已重启，但接口健康检查未通过"
+    die "更新后接口健康检查未通过，正在恢复更新前的版本"
   fi
   repair_install_permissions
+  UPDATE_ROLLBACK_PENDING=0
 
   save_state
   printf '已清理: 旧版前端目录、上游示例环境文件、校验文件、遗留安装包\n'
