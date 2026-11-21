@@ -20,7 +20,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/Yufeifeio/epusdt-Install/mai
 | 功能 | 说明 |
 | --- | --- |
 | ⚡ 一键安装 | 自动下载官方 release，填域名自动 HTTPS，完成后输出后台账号密码 |
-| 🔁 一键更新 | 拉取官方最新版本，保留配置和数据库 |
+| 🔁 一键更新 | 拉取官方最新版本，保留配置和 SQLite 数据 |
 | 🧲 接管旧实例 | 保留原有 `.env` 和 `sqlite` 数据，迁移到脚本托管 |
 | 🔐 HTTPS | 部署时填写域名即可自动申请证书、配置反代、强制 HTTPS |
 | 🛠️ 日常管理 | 状态、日志、启动、停止、重启 |
@@ -40,11 +40,13 @@ bash <(curl -fsSL https://raw.githubusercontent.com/Yufeifeio/epusdt-Install/mai
 
 不要使用 `/www/wwwroot`、`/opt`、`/var/www` 这类系统目录或站点根目录，避免覆盖或误删其他站点数据。
 
-## ⚠️ 主版本升级提醒
+## ⚠️ 升级兼容提醒
 
 官方 `v2.0.0` 起，`GMPay` 签名从 `MD5` 改为 `HMAC-SHA256`。仍使用旧 `GMPay MD5` 的商户需要先改造签名，否则会返回 `401`。
 
 `EPay` 兼容接口不受影响，仍继续使用 `MD5`。脚本检测到主版本升级时会要求确认，非交互执行需加 `--force`。
+
+官方 `v2.1.1` 起仅支持 SQLite。更新脚本发现 `.env` 使用其他数据库类型或仍包含旧数据库配置项时，会在替换程序前停止更新；请先将数据迁移到 SQLite。
 
 ## 🧲 接管旧实例
 
@@ -78,7 +80,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/Yufeifeio/epusdt-Install/mai
 - 校验文件 `SHA256SUMS`
 - 安装目录下遗留的 `epusdt-*.tar.gz`
 
-配置文件、数据库和运行数据不会被清空。
+配置文件、SQLite 数据和运行数据不会被清空。
 
 ## 🔐 域名模式
 
